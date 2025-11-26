@@ -5,83 +5,180 @@ const bodyParser = require('body-parser');
 const axios = require('axios');
 const mongoose = require('mongoose');
 
+const chatlogic = require('./chatlogic');
 const Appointment = require('./models/Appointment');
 const Session = require('./models/Session');
 
 const app = express();
 app.use(bodyParser.json());
 
-const GRAPH_API_VERSION = process.env.GRAPH_API_VERSION || 'v18.0';
-const PHONE_NUMBER_ID = process.env.WHATSAPP_PHONE_NUMBER_ID;
-const ACCESS_TOKEN = process.env.WHATSAPP_ACCESS_TOKEN;
+// ---------------- CONFIG ----------------
+const GRAPH_API_VERSION = process.env.GRAPH_API_VERSION || 'v20.0';
 const VERIFY_TOKEN = process.env.WHATSAPP_VERIFY_TOKEN || 'verify_token';
-const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/whatsapp_bot_db';
+const MONGODB_URI = process.env.MONGODB_URI;
+const ADMIN_RELOAD_TOKEN = process.env.ADMIN_RELOAD_TOKEN || '';
+const PORT = process.env.PORT || 3000;
 
-const SERVICES = ["Dental Cleaning", "Teeth Whitening", "Tooth Extraction", "Consultation"];
-
-async function connectDb() {
-  await mongoose.connect(MONGODB_URI, {
-    useNewUrlParser: true,
-    useUnifiedTopology: true
-  });
-  console.log('Connected to MongoDB');
-}
-connectDb().catch(err => {
-  console.error('MongoDB connection error', err);
+if (!MONGODB_URI) {
+  console.error('❌ FATAL: MONGODB_URI env var not set. Add it and restart.');
   process.exit(1);
-});
+}
 
-// Helper to send text message via Cloud API
-async function sendTextMessage(toPhone, text) {
-  const url = `https://graph.facebook.com/${GRAPH_API_VERSION}/${PHONE_NUMBER_ID}/messages`;
+// ---------------- CLINIC ENV PARSER ----------------
+// Expect per-clinic env vars:
+// CLINIC_COUNT=N
+// CLINIC_1_NAME, CLINIC_1_PHONE_NUMBER_ID, CLINIC_1_ACCESS_TOKEN, CLINIC_1_DISPLAY_PHONE
+// CLINIC_2_NAME, ...
+let clinics = [];
+const clinicsByPhoneId = new Map();
+const clinicsByName = new Map();
+
+function loadClinicsFromEnvByCount() {
+  clinics = [];
+  clinicsByPhoneId.clear();
+  clinicsByName.clear();
+
+  const rawCount = process.env.CLINIC_COUNT || '0';
+  const count = Number(rawCount) || 0;
+
+  for (let i = 1; i <= count; i++) {
+    const prefix = `CLINIC_${i}_`;
+    const name = process.env[`${prefix}NAME`];
+    const phoneId = process.env[`${prefix}PHONE_NUMBER_ID`];
+    const token = process.env[`${prefix}ACCESS_TOKEN`];
+    const displayPhone = process.env[`${prefix}DISPLAY_PHONE`];
+
+    if (!name || !phoneId || !token) {
+      console.warn(`CLINIC_${i} incomplete — skipping. Need NAME, PHONE_NUMBER_ID, ACCESS_TOKEN.`);
+      continue;
+    }
+
+    const clinic = {
+      name: String(name),
+      phone_number_id: String(phoneId),
+      access_token: String(token),
+      display_phone: displayPhone ? String(displayPhone) : null
+    };
+
+    clinics.push(clinic);
+    clinicsByPhoneId.set(String(clinic.phone_number_id), clinic);
+    if (clinic.name) clinicsByName.set(String(clinic.name).toLowerCase(), clinic);
+  }
+
+  console.log(`Loaded ${clinics.length} clinic(s) from env (CLINIC_COUNT=${count})`);
+}
+loadClinicsFromEnvByCount();
+
+// ---------------- MONGO CONNECT ----------------
+async function connectDb() {
+  try {
+    await mongoose.connect(MONGODB_URI, {
+      useNewUrlParser: true,
+      useUnifiedTopology: true
+    });
+    console.log('✅ Connected to MongoDB');
+  } catch (err) {
+    console.error('❌ MongoDB connection error:', err?.message || err);
+    process.exit(1);
+  }
+}
+connectDb();
+
+// ---------------- HELPERS ----------------
+function findClinicForChange(change) {
+  const value = (change && change.value) ? change.value : {};
+  const metadata = value.metadata || {};
+
+  // primary: phone_number_id (recommended)
+  const phoneId = metadata.phone_number_id || metadata.phone_number;
+  if (phoneId && clinicsByPhoneId.has(String(phoneId))) {
+    return clinicsByPhoneId.get(String(phoneId));
+  }
+
+  // fallback: display phone
+  const displayPhone = metadata.display_phone_number || metadata.display_phone;
+  if (displayPhone) {
+    for (const c of clinics) {
+      if (c.display_phone && String(c.display_phone) === String(displayPhone)) return c;
+    }
+  }
+
+  // fallback: contact profile name
+  const businessName = (value.contacts && value.contacts[0] && value.contacts[0].profile && value.contacts[0].profile.name) || null;
+  if (businessName && clinicsByName.has(String(businessName).toLowerCase())) {
+    return clinicsByName.get(String(businessName).toLowerCase());
+  }
+
+  return null;
+}
+
+async function sendTextMessageForClinic(clinic, toPhone, text) {
+  if (!clinic || !clinic.phone_number_id || !clinic.access_token) {
+    const errMsg = 'Missing clinic credentials (phone_number_id or access_token)';
+    console.error('sendTextMessageForClinic error:', errMsg);
+    throw new Error(errMsg);
+  }
+
+  const url = `https://graph.facebook.com/${GRAPH_API_VERSION}/${clinic.phone_number_id}/messages`;
+  const toNormalized = String(toPhone).replace(/^whatsapp:/, '').replace(/^\+/, '');
+
   const payload = {
     messaging_product: "whatsapp",
-    to: toPhone, // expect bare phone number string like '9198xxxxxxx' or include '+' as allowed
+    to: toNormalized,
     type: "text",
     text: { body: text }
   };
+
   const headers = {
-    Authorization: `Bearer ${ACCESS_TOKEN}`,
+    Authorization: `Bearer ${clinic.access_token}`,
     'Content-Type': 'application/json'
   };
-  return axios.post(url, payload, { headers });
+
+  try {
+    const resp = await axios.post(url, payload, { headers });
+    return resp.data;
+  } catch (err) {
+    console.error('sendTextMessageForClinic axios error:', err?.response?.data || err?.message);
+    throw err;
+  }
 }
 
-// Session helpers using Mongo
-async function getSession(waId) {
-  // waId expected to be 'whatsapp:+9198...'
-  let session = await Session.findOne({ whatsapp_id: waId }).exec();
+// Session helpers (scoped by clinic_key and whatsapp_id)
+async function getSessionForClinicKey(clinicKey, waId) {
+  let session = await Session.findOne({ clinic_key: clinicKey, whatsapp_id: waId }).exec();
   if (!session) {
-    session = new Session({ whatsapp_id: waId, state: 'MENU', data: {} });
+    session = new Session({ clinic_key: clinicKey, whatsapp_id: waId, state: 'MENU', data: {} });
     await session.save();
   }
   return session;
 }
-async function updateSession(waId, updates) {
+
+async function updateSessionForClinicKey(clinicKey, waId, updates) {
   const opts = { upsert: true, new: true, setDefaultsOnInsert: true };
   const session = await Session.findOneAndUpdate(
-    { whatsapp_id: waId },
+    { clinic_key: clinicKey, whatsapp_id: waId },
     { $set: { ...updates, updated_at: Date.now() } },
     opts
   ).exec();
   return session;
 }
-async function resetSession(waId) {
-  await Session.findOneAndDelete({ whatsapp_id: waId }).exec();
+
+async function resetSessionForClinicKey(clinicKey, waId) {
+  await Session.findOneAndDelete({ clinic_key: clinicKey, whatsapp_id: waId }).exec();
 }
 
-// Main menu text
-function getMainMenuText() {
-  return [
-    "Welcome to Lumonex! Please choose an option by typing the number:",
-    "1. Book Appointment",
-    "2. Services",
-    "3. Contact Info",
-    "Type 'menu' anytime to return here."
-  ].join('\n');
-}
+// ---------------- ROUTES ----------------
+app.get('/health', (req, res) => res.json({ status: 'ok', clinicsLoaded: clinics.length }));
 
-// Webhook GET for verification
+// Admin: reload from process.env (protected by ADMIN_RELOAD_TOKEN)
+app.post('/admin/reload-clinics', (req, res) => {
+  const token = req.headers['x-admin-token'];
+  if (!ADMIN_RELOAD_TOKEN || token !== ADMIN_RELOAD_TOKEN) return res.status(403).json({ error: 'forbidden' });
+  loadClinicsFromEnvByCount();
+  return res.json({ ok: true, clinicsLoaded: clinics.length });
+});
+
+// Webhook verification GET
 app.get('/webhook', (req, res) => {
   const mode = req.query['hub.mode'];
   const token = req.query['hub.verify_token'];
@@ -98,10 +195,9 @@ app.get('/webhook', (req, res) => {
   res.sendStatus(400);
 });
 
-// Webhook POST: process incoming messages
+// Webhook POST — incoming
 app.post('/webhook', async (req, res) => {
-  // Immediately reply 200 to Meta
-  res.sendStatus(200);
+  res.sendStatus(200); // ack early
 
   try {
     const body = req.body;
@@ -109,119 +205,45 @@ app.post('/webhook', async (req, res) => {
 
     for (const entry of body.entry) {
       for (const change of entry.changes || []) {
+        const clinic = findClinicForChange(change);
+        if (!clinic) {
+          console.warn('No clinic matched for incoming change. Metadata:', JSON.stringify((change.value && change.value.metadata) || {}));
+          continue;
+        }
+
         const value = change.value || {};
         const messages = value.messages || [];
         if (!messages.length) continue;
 
         for (const msg of messages) {
-          // msg.from is phone number string like '9170xxxxxxx'
-          const fromNumber = msg.from; // e.g., '9170xxxxxxx' (no 'whatsapp:' prefix)
+          const fromNumber = msg.from; // e.g., '9198...'
           const waFrom = `whatsapp:${fromNumber}`;
-
           const incomingText = (msg.text && msg.text.body) ? msg.text.body.trim() : '';
 
-          // ensure session exists
-          let session = await getSession(waFrom);
+          const clinicKey = String(clinic.phone_number_id);
+          const session = await getSessionForClinicKey(clinicKey, waFrom);
 
-          // allow menu/help
-          const lower = (incomingText || '').toLowerCase();
-          if (lower === 'menu' || lower === 'help') {
-            await updateSession(waFrom, { state: 'MENU', data: {} });
-            await sendTextMessage(fromNumber, getMainMenuText()).catch(err => console.error('send error', err?.response?.data || err.message));
-            continue;
-          }
-
-          // route by session.state
-          const state = session.state || 'MENU';
-
-          switch (state) {
-            case 'MENU':
-              if (lower === '1' || incomingText.includes('book')) {
-                await updateSession(waFrom, { state: 'ASK_SERVICE', data: {} });
-                let options = "Which service would you like? Reply with the number:\n";
-                SERVICES.forEach((s, i) => options += `${i+1}. ${s}\n`);
-                await sendTextMessage(fromNumber, options).catch(err => console.error('send error', err?.response?.data || err.message));
-              } else if (lower === '2' || incomingText.includes('service')) {
-                let list = "Our Services:\n";
-                SERVICES.forEach((s, i) => list += `${i+1}. ${s}\n`);
-                list += "\nType 1 to Book an Appointment.";
-                await sendTextMessage(fromNumber, list).catch(err => console.error('send error', err?.response?.data || err.message));
-              } else if (lower === '3' || incomingText.includes('contact')) {
-                await sendTextMessage(fromNumber, "Contact Lumonex:\nPhone: +91-98765-43210\nEmail: hello@lumonex.example\nType 1 to Book an Appointment.").catch(err => console.error('send error', err?.response?.data || err.message));
-              } else {
-                await sendTextMessage(fromNumber, "Sorry, I didn't understand. " + getMainMenuText()).catch(err => console.error('send error', err?.response?.data || err.message));
-              }
-              break;
-
-            case 'ASK_SERVICE': {
-              const idx = parseInt(incomingText);
-              if (!isNaN(idx) && idx >= 1 && idx <= SERVICES.length) {
-                const service = SERVICES[idx - 1];
-                await updateSession(waFrom, { state: 'ASK_NAME', data: { service } });
-                await sendTextMessage(fromNumber, `Great — you chose ${service}. Please tell me your full name.`).catch(err => console.error('send error', err?.response?.data || err.message));
-              } else {
-                await sendTextMessage(fromNumber, "Please reply with the number of the service from the list.").catch(err => console.error('send error', err?.response?.data || err.message));
-              }
-              break;
-            }
-
-            case 'ASK_NAME':
-              session.data.name = incomingText;
-              await updateSession(waFrom, { state: 'ASK_PHONE', data: session.data });
-              await sendTextMessage(fromNumber, "Thanks. Please provide a phone number we can contact (e.g., +9198xxxx...).").catch(err => console.error('send error', err?.response?.data || err.message));
-              break;
-
-            case 'ASK_PHONE':
-              session.data.phone = incomingText;
-              await updateSession(waFrom, { state: 'ASK_DATE', data: session.data });
-              await sendTextMessage(fromNumber, "Please provide preferred appointment date in YYYY-MM-DD format (e.g., 2025-12-01).").catch(err => console.error('send error', err?.response?.data || err.message));
-              break;
-
-            case 'ASK_DATE':
-              if (!/^\d{4}-\d{2}-\d{2}$/.test(incomingText)) {
-                await sendTextMessage(fromNumber, "Invalid format. Please provide date as YYYY-MM-DD (e.g., 2025-12-01).").catch(err => console.error('send error', err?.response?.data || err.message));
-              } else {
-                session.data.appointment_date = incomingText;
-                await updateSession(waFrom, { state: 'ASK_TIME', data: session.data });
-                await sendTextMessage(fromNumber, "Got it. What time do you prefer? (e.g., 10:30 AM or 14:30)").catch(err => console.error('send error', err?.response?.data || err.message));
-              }
-              break;
-
-            case 'ASK_TIME':
-              session.data.appointment_time = incomingText;
-              // save appointment to MongoDB
-              try {
-                const appt = new Appointment({
-                  whatsapp_number: waFrom,
-                  name: session.data.name || null,
-                  phone: session.data.phone || null,
-                  service: session.data.service || null,
-                  appointment_date: session.data.appointment_date || null,
-                  appointment_time: session.data.appointment_time || null
-                });
-                await appt.save();
-
-                const confirmText = `✅ Appointment confirmed!\n\nName: ${session.data.name}\nService: ${session.data.service}\nDate: ${session.data.appointment_date}\nTime: ${session.data.appointment_time}\n\nWe will contact you at ${session.data.phone} if needed.\n\nType 'menu' to go back to the main menu.`;
-                await sendTextMessage(fromNumber, confirmText).catch(err => console.error('send error', err?.response?.data || err.message));
-              } catch (err) {
-                console.error('DB save error', err);
-                await sendTextMessage(fromNumber, "Sorry, I couldn't save your appointment due to a server error. Please try again later.").catch(err => console.error('send error', err?.response?.data || err.message));
-              }
-              await resetSession(waFrom);
-              break;
-
-            default:
-              await updateSession(waFrom, { state: 'MENU', data: {} });
-              await sendTextMessage(fromNumber, getMainMenuText()).catch(err => console.error('send error', err?.response?.data || err.message));
-              break;
-          } // switch
-        } // messages loop
-      } // changes loop
-    } // entry loop
+          await chatlogic.handleIncomingMessage({
+            clinic,
+            session,
+            incomingText,
+            fromNumber,
+            // bind send/update/reset to clinic
+            sendTextMessage: (to, text) => sendTextMessageForClinic(clinic, to, text),
+            updateSession: (waId, updates) => updateSessionForClinicKey(clinicKey, waId, updates),
+            resetSession: (waId) => resetSessionForClinicKey(clinicKey, waId),
+            Appointment,
+            waFrom
+          });
+        }
+      }
+    }
   } catch (err) {
-    console.error('Webhook processing error:', err);
+    console.error('Webhook processing error:', err?.response?.data || err?.message || err);
   }
 });
 
-const port = process.env.PORT || 3000;
-app.listen(port, () => console.log(`WhatsApp Cloud bot (MongoDB) listening on port ${port}`));
+// ---------------- START ----------------
+app.listen(PORT, () => {
+  console.log(`WhatsApp Cloud single-webhook multi-clinic bot listening on port ${PORT}`);
+});

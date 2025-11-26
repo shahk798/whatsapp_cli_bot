@@ -1,13 +1,15 @@
 // models/Session.js
 const mongoose = require('mongoose');
 
-// store minimal session state to continue flows across restarts
 const SessionSchema = new mongoose.Schema({
-  whatsapp_id: { type: String, required: true, unique: true }, // e.g., 'whatsapp:+9198...'
+  clinic_key: { type: String, required: true },   // phone_number_id
+  whatsapp_id: { type: String, required: true },  // 'whatsapp:+91...'
   state: { type: String, default: 'MENU' },
   data: { type: Object, default: {} },
   updated_at: { type: Date, default: Date.now }
 });
+
+SessionSchema.index({ clinic_key: 1, whatsapp_id: 1 }, { unique: true });
 
 SessionSchema.pre('save', function(next) {
   this.updated_at = Date.now();
