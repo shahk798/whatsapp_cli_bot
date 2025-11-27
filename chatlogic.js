@@ -1,9 +1,12 @@
 // chatlogic.js
 const Record = require('./models/Record');
-const Session = require('./models/Session');
 const clinicsConfig = require('./utils/clinicsConfig');
 const whatsapp = require('./modules/whatsapp');
 const dayjs = require('dayjs');
+const customParseFormat = require('dayjs/plugin/customParseFormat');
+dayjs.extend(customParseFormat);
+
+const SESSION_TTL_MIN = 20; // minutes - treat sessions older than this as expired
 
 const MAIN_MENU_TEXT = `👋 Welcome to our dental clinic!
 Please choose:
@@ -13,6 +16,7 @@ Please choose:
 4️⃣ Speak to Receptionist
 Reply with the number (1-4) or type "book".`;
 
+// helper to normalize message text
 function textFromMessage(message) {
   if (!message) return '';
   if (message.text?.body) return message.text.body.trim();
@@ -22,12 +26,80 @@ function textFromMessage(message) {
   return '';
 }
 
+function formatDate(date) {
+  if (!date) return '';
+  return dayjs(date).format('DD MMM YYYY');
+}
+
+function robustParseDate(text) {
+  if (!text || typeof text !== 'string') return null;
+  const clean = text.trim();
+  const formats = ['DD-MM-YYYY', 'D-M-YYYY', 'DD/MM/YYYY', 'D/M/YYYY', 'YYYY-MM-DD'];
+  for (const f of formats) {
+    const d = dayjs(clean, f, true);
+    if (d.isValid()) return d;
+  }
+  const loose = dayjs(clean);
+  return loose.isValid() ? loose : null;
+}
+
+// session helpers operate on the profile document's session subdoc
+async function loadOrCreateProfile(clinicId, clinicName, phone, metadata = {}) {
+  // find profile doc (appointmentDate: null)
+  let profile = await Record.findOne({ clinicId, phone, appointmentDate: null });
+  if (!profile) {
+    const payload = {
+      clinicId,
+      clinicName,
+      phone,
+      patientName: '',
+      appointmentDate: null,
+      status: 'profile',
+      source: 'whatsapp',
+      metadata
+    };
+    profile = await Record.create(payload);
+  }
+  return profile;
+}
+
+function sessionIsExpired(session) {
+  if (!session) return true;
+  if (!session.updatedAt) return true;
+  const ageMin = (Date.now() - new Date(session.updatedAt).getTime()) / (1000 * 60);
+  return ageMin > SESSION_TTL_MIN;
+}
+
+async function saveSessionOnProfile(profileId, sessionObj) {
+  // sessionObj = { state, data } ; we will set updatedAt and optional expiresAt
+  const updated = {
+    'session.state': sessionObj.state,
+    'session.data': sessionObj.data,
+    'session.updatedAt': new Date(),
+    'session.expiresAt': new Date(Date.now() + SESSION_TTL_MIN * 60 * 1000)
+  };
+  return await Record.findByIdAndUpdate(profileId, { $set: updated }, { new: true });
+}
+
+async function clearSessionOnProfile(profileId) {
+  return await Record.findByIdAndUpdate(profileId, { $unset: { session: '' } }, { new: true });
+}
+
+// safe send wrapper
+async function safeSendText(phoneNumberId, to, text) {
+  try {
+    await whatsapp.sendText(phoneNumberId, to, text);
+  } catch (err) {
+    console.error('WhatsApp send error:', err?.response?.data || err.message || err);
+  }
+}
+
 async function handleIncomingMessage(message, value, clinic) {
-  const from = message.from; // user's WA number
+  const from = message.from;
   const text = textFromMessage(message);
   console.log(`📩 Incoming from ${from} (clinic=${clinic?.clinicId || 'unknown'}):`, text);
 
-  // detect clinic info (by phone_number_id) or fallback to single clinic
+  // resolve clinic
   let clinicId = clinic?.clinicId || null;
   let clinicName = clinic?.clinicName || 'Clinic';
   let clinicPhoneNumberId = clinic?.phoneNumberId || null;
@@ -40,8 +112,6 @@ async function handleIncomingMessage(message, value, clinic) {
       clinicPhoneNumberId = c.phoneNumberId;
     }
   }
-
-  // fallback to single clinic if only one configured
   if (!clinicId) {
     const all = clinicsConfig.getAllClinics();
     if (all.length === 1) {
@@ -51,158 +121,143 @@ async function handleIncomingMessage(message, value, clinic) {
     }
   }
 
-  // create/find session for this phone + clinic
-  let session = await Session.findOne({ phone: from, clinicId });
-  if (!session) {
-    session = await Session.create({ phone: from, clinicId, data: { clinicId, clinicName } });
-  }
-
-  // ---------------------------
-  // Upsert patient profile (profile doc: appointmentDate == null)
-  // ---------------------------
+  // ensure profile exists
+  let profile;
   try {
-    const profileUpdate = {
-      clinicId,
-      clinicName,
-      phone: from,
-      source: 'whatsapp',
-      metadata: value?.contacts?.[0] || value?.metadata || {}
-    };
-
-    // include name/email if available in the session data
-    if (session.data?.name) profileUpdate.patientName = session.data.name;
-    if (session.data?.email) profileUpdate.email = session.data.email;
-
-    // remove undefined fields (defensive)
-    Object.keys(profileUpdate).forEach(k => profileUpdate[k] === undefined && delete profileUpdate[k]);
-
-    // Upsert profile-only record (appointmentDate: null). This ensures a patient profile exists.
-    await Record.findOneAndUpdate(
-      { clinicId, phone: from, appointmentDate: null },
-      { $set: profileUpdate, $setOnInsert: { createdAt: new Date() } },
-      { upsert: true, new: true }
-    );
+    profile = await loadOrCreateProfile(clinicId, clinicName, from, value?.contacts?.[0] || value?.metadata || {});
   } catch (err) {
-    console.error('Failed to upsert patient profile:', err);
+    console.error('Error loading/creating profile:', err);
+    await safeSendText(clinicPhoneNumberId, from, '❌ Internal error. Please try again later.');
+    return;
   }
 
-  // reset on greeting
+  // load session from profile (or start new)
+  let session = profile.session || { state: 'idle', data: {}, updatedAt: new Date() };
+  // if expired, reset
+  if (sessionIsExpired(session)) {
+    session = { state: 'idle', data: {}, updatedAt: new Date() };
+    // persist the cleared session to the profile
+    await saveSessionOnProfile(profile._id, session);
+  }
+
+  // If greeting / reset
   if (/^(hi|hello|menu|start|hey)$/i.test(text)) {
-    session.state = 'idle';
-    session.data = { clinicId, clinicName };
-    await session.save();
-    await whatsapp.sendText(clinicPhoneNumberId, from, MAIN_MENU_TEXT);
+    session = { state: 'idle', data: { clinicId, clinicName }, updatedAt: new Date() };
+    await saveSessionOnProfile(profile._id, session);
+    await safeSendText(clinicPhoneNumberId, from, MAIN_MENU_TEXT);
     return;
   }
 
   // quick commands
   if (/^cancel\b/i.test(text)) {
-    await handleCancel(from, session, clinicPhoneNumberId, clinicId);
-    return;
-  }
-  if (/^reschedule\b/i.test(text)) {
-    await whatsapp.sendText(clinicPhoneNumberId, from, '🔁 To reschedule, please call reception or reply with a new preferred date (DD-MM-YYYY) and time (HH:MM).');
+    await handleCancel(profile, clinicPhoneNumberId, from);
     return;
   }
   if (/^status\b/i.test(text)) {
-    await handleStatus(from, session, clinicPhoneNumberId, clinicId);
+    await handleStatus(profile, clinicPhoneNumberId, from);
     return;
   }
 
-  // route by session state
+  // routing by session state
   switch (session.state) {
     case 'idle':
-      await handleIdle(from, text, session, clinicPhoneNumberId, clinicId, clinicName);
+      await handleIdle(profile, session, text, clinicPhoneNumberId, clinicId, clinicName);
       break;
     case 'booking_name':
     case 'booking_service':
     case 'booking_date':
     case 'booking_time':
     case 'booking_confirm':
-      await handleBookingFlow(from, text, session, clinicPhoneNumberId, clinicId, clinicName);
+      await handleBookingFlow(profile, session, text, clinicPhoneNumberId, clinicId, clinicName);
       break;
     default:
-      session.state = 'idle';
-      session.data = { clinicId, clinicName };
-      await session.save();
-      await whatsapp.sendText(clinicPhoneNumberId, from, MAIN_MENU_TEXT);
+      // reset and show menu
+      session = { state: 'idle', data: { clinicId, clinicName }, updatedAt: new Date() };
+      await saveSessionOnProfile(profile._id, session);
+      await safeSendText(clinicPhoneNumberId, from, MAIN_MENU_TEXT);
       break;
   }
 }
 
-async function handleIdle(from, text, session, clinicPhoneNumberId, clinicId, clinicName) {
+// handlers
+
+async function handleIdle(profile, session, text, clinicPhoneNumberId, clinicId, clinicName) {
+  const from = profile.phone;
+
   if (/^[1-4]$/.test(text)) {
     const opt = text;
     if (opt === '1') {
       session.state = 'booking_name';
       session.data = { clinicId, clinicName };
-      await session.save();
-      return whatsapp.sendText(clinicPhoneNumberId, from, '📝 Great — what is the *patient full name*?');
+      await saveSessionOnProfile(profile._id, session);
+      return safeSendText(clinicPhoneNumberId, from, '📝 Great — what is the *patient full name*?');
     }
     if (opt === '2') {
-      return whatsapp.sendText(clinicPhoneNumberId, from, "🦷 *Treatments:* Cleaning, Whitening, Braces, RCT, Implants. Reply '1' to book.");
+      return safeSendText(clinicPhoneNumberId, from, "🦷 *Treatments:* Cleaning, Whitening, Braces, RCT, Implants. Reply '1' to book.");
     }
     if (opt === '3') {
-      return whatsapp.sendText(clinicPhoneNumberId, from, `📍 Address & Timings for ${clinicName}: Mon-Sat 9AM - 7PM\nReply '1' to book.`);
+      return safeSendText(clinicPhoneNumberId, from, `📍 Address & Timings for ${clinicName}: Mon-Sat 9AM - 7PM\nReply '1' to book.`);
     }
     if (opt === '4') {
-      const clinic = clinicsConfig.findClinicById(session.data?.clinicId);
-      return whatsapp.sendText(clinicPhoneNumberId, from, `☎️ Call reception: ${clinic?.contactNumber || 'Not provided'}`);
+      const clinicObj = clinicsConfig.findClinicById(session.data?.clinicId);
+      return safeSendText(clinicPhoneNumberId, from, `☎️ Call reception: ${clinicObj?.contactNumber || 'Not provided'}`);
     }
   }
 
   if (/book|appointment|slot|visit/i.test(text)) {
     session.state = 'booking_name';
     session.data = { clinicId, clinicName };
-    await session.save();
-    return whatsapp.sendText(clinicPhoneNumberId, from, '📝 Sure — please share the *patient full name*.');
+    await saveSessionOnProfile(profile._id, session);
+    return safeSendText(clinicPhoneNumberId, from, '📝 Sure — please share the *patient full name*.');
   }
 
-  return whatsapp.sendText(clinicPhoneNumberId, from, MAIN_MENU_TEXT);
+  return safeSendText(clinicPhoneNumberId, from, MAIN_MENU_TEXT);
 }
 
-async function handleBookingFlow(from, text, session, clinicPhoneNumberId, clinicId, clinicName) {
+async function handleBookingFlow(profile, session, text, clinicPhoneNumberId, clinicId, clinicName) {
+  const from = profile.phone;
+
   // booking_name -> ask service
   if (session.state === 'booking_name') {
     session.data.name = text;
     session.state = 'booking_service';
-    await session.save();
-    // update profile name immediately
+    await saveSessionOnProfile(profile._id, session);
+
+    // update profile patientName immediately
     try {
-      await Record.findOneAndUpdate(
-        { clinicId, phone: from, appointmentDate: null },
-        { $set: { patientName: text, updatedAt: new Date() } },
-        { upsert: true }
-      );
+      await Record.findByIdAndUpdate(profile._id, { $set: { patientName: text, updatedAt: new Date() } });
     } catch (err) {
-      console.error('Failed to update profile name during booking:', err);
+      console.error('Failed to update profile name:', err);
     }
-    return whatsapp.sendText(clinicPhoneNumberId, from, 'Which service do you want? (Cleaning / Whitening / RCT / Braces / Implant) 🦷');
+    return safeSendText(clinicPhoneNumberId, from, 'Which service do you want? (Cleaning / Whitening / RCT / Braces / Implant) 🦷');
   }
 
   // booking_service -> ask date
   if (session.state === 'booking_service') {
     session.data.service = text;
     session.state = 'booking_date';
-    await session.save();
-    return whatsapp.sendText(clinicPhoneNumberId, from, 'Please share preferred date (DD-MM-YYYY) 📅');
+    await saveSessionOnProfile(profile._id, session);
+    return safeSendText(clinicPhoneNumberId, from, 'Please share preferred date (DD-MM-YYYY) 📅');
   }
 
-  // booking_date -> ask time
+  // booking_date -> ask time (validate date)
   if (session.state === 'booking_date') {
-    const parsed = parseDate(text);
-    if (!parsed) return whatsapp.sendText(clinicPhoneNumberId, from, '❗ Invalid date. Send like *25-12-2025* (DD-MM-YYYY).');
+    const parsed = robustParseDate(text);
+    if (!parsed) {
+      return safeSendText(clinicPhoneNumberId, from, '❗ Invalid date. Send like *28-11-2025* (DD-MM-YYYY).');
+    }
     session.data.date = parsed.toISOString();
     session.state = 'booking_time';
-    await session.save();
-    return whatsapp.sendText(clinicPhoneNumberId, from, 'Choose a time slot (e.g. 10:00, 11:30, 15:00) ⏰');
+    await saveSessionOnProfile(profile._id, session);
+    return safeSendText(clinicPhoneNumberId, from, 'Choose a time slot (e.g. 10:00, 11:30, 15:00) ⏰');
   }
 
   // booking_time -> confirm
   if (session.state === 'booking_time') {
-    session.data.time = text;
+    const timeNormalized = text.replace(/\./g, ':').trim();
+    session.data.time = timeNormalized;
     session.state = 'booking_confirm';
-    await session.save();
+    await saveSessionOnProfile(profile._id, session);
 
     const confirmMsg = `✅ *Confirm appointment:*
 👤 ${session.data.name}
@@ -212,125 +267,118 @@ async function handleBookingFlow(from, text, session, clinicPhoneNumberId, clini
 💰 Price: ${session.data.price || process.env.DEFAULT_PRICE || 0}
 
 Reply *yes* to confirm or *no* to cancel.`;
-    return whatsapp.sendText(clinicPhoneNumberId, from, confirmMsg);
+    return safeSendText(clinicPhoneNumberId, from, confirmMsg);
   }
 
-  // booking_confirm -> save record and notify clinic
+  // booking_confirm -> save appointment and clear session
   if (session.state === 'booking_confirm') {
     if (/^y(es)?$/i.test(text)) {
-      // prepare record
-      const recPayload = {
+      // re-validate date strictly
+      const parsed = robustParseDate(session.data.date || session.data.date);
+      if (!parsed || !parsed.isValid()) {
+        session.state = 'booking_date';
+        await saveSessionOnProfile(profile._id, session);
+        return safeSendText(clinicPhoneNumberId, from, '❗ The date you provided looks invalid. Please send date like *28-11-2025* (DD-MM-YYYY).');
+      }
+      const apptDate = parsed.toDate();
+
+      // create appointment record (separate doc)
+      const apptPayload = {
         clinicId: session.data.clinicId || clinicId,
         clinicName: session.data.clinicName || clinicName,
-        patientName: session.data.name,
-        phone: from,
-        patientEmail: session.data.email || '',
+        patientName: session.data.name || profile.patientName || '',
+        phone: profile.phone,
+        email: session.data.email || profile.email || '',
         service: session.data.service,
         price: Number(session.data.price || process.env.DEFAULT_PRICE || 0),
-        appointmentDate: new Date(session.data.date),
+        appointmentDate: apptDate,
         timeSlot: session.data.time,
         status: 'booked',
         source: 'whatsapp',
         metadata: session.data.metadata || {}
       };
 
-      // create appointment record
-      let rec;
+      let apptRec;
       try {
-        rec = await Record.create(recPayload);
+        apptRec = await Record.create(apptPayload);
       } catch (err) {
         console.error('Failed to create appointment record:', err);
-        await whatsapp.sendText(clinicPhoneNumberId, from, '❌ Something went wrong while booking. Please try again later.');
-        session.state = 'idle';
-        session.data = { clinicId, clinicName };
-        await session.save();
+        await safeSendText(clinicPhoneNumberId, from, '❌ Something went wrong while booking. Please try again later.');
+        // keep session so user can retry
         return;
       }
 
-      // update patient profile record (appointmentDate: null) with latest info
+      // update profile with latest info and clear its session
       try {
-        await Record.findOneAndUpdate(
-          { clinicId: rec.clinicId, phone: rec.phone, appointmentDate: null },
-          {
-            $set: {
-              clinicName: rec.clinicName,
-              patientName: rec.patientName,
-              email: rec.patientEmail || '',
-              updatedAt: new Date()
-            }
+        await Record.findByIdAndUpdate(profile._id, {
+          $set: {
+            patientName: apptRec.patientName,
+            email: apptRec.email,
+            updatedAt: new Date()
           },
-          { upsert: false }
-        );
+          $unset: { session: '' }
+        });
       } catch (err) {
-        console.error('Failed to update patient profile after booking:', err);
+        console.error('Failed to update/clear profile after booking:', err);
       }
 
-      // notify clinic staff
-      const clinic = clinicsConfig.findClinicById(rec.clinicId);
-      if (clinic && clinic.contactNumber) {
+      // notify clinic staff (if configured)
+      const clinicObj = clinicsConfig.findClinicById(apptRec.clinicId);
+      if (clinicObj && clinicObj.contactNumber) {
         const contactMsg = `📣 New appointment booked:
-🦷 ${rec.service}
-👤 ${rec.patientName} (${rec.phone})
-📅 ${dayjs(rec.appointmentDate).format('DD MMM YYYY')}
-⏰ ${rec.timeSlot}
-🔖 ID: ${rec._id}`;
+🦷 ${apptRec.service}
+👤 ${apptRec.patientName} (${apptRec.phone})
+📅 ${dayjs(apptRec.appointmentDate).format('DD MMM YYYY')}
+⏰ ${apptRec.timeSlot}
+🔖 ID: ${apptRec._id}`;
         try {
-          await whatsapp.sendText(clinic.phoneNumberId, clinic.contactNumber, contactMsg);
+          await safeSendText(clinicObj.phoneNumberId, clinicObj.contactNumber, contactMsg);
         } catch (err) {
           console.error('Failed to notify clinic staff via WhatsApp', err);
         }
       }
 
-      // reset session and confirm to user
-      session.state = 'idle';
-      session.data = { clinicId: rec.clinicId, clinicName: rec.clinicName };
-      await session.save();
-
-      await whatsapp.sendText(clinic?.phoneNumberId || clinicPhoneNumberId, from, `🎉 Your appointment is confirmed for *${formatDate(rec.appointmentDate)}* at *${rec.timeSlot}*. See you soon! 👋`);
+      // confirm to user
+      await safeSendText(clinicObj?.phoneNumberId || clinicPhoneNumberId, profile.phone, `🎉 Your appointment is confirmed for *${formatDate(apptRec.appointmentDate)}* at *${apptRec.timeSlot}*. See you soon! 👋`);
       return;
     } else {
-      session.state = 'idle';
-      session.data = { clinicId, clinicName };
-      await session.save();
-      return whatsapp.sendText(clinicPhoneNumberId, from, '❌ Booking cancelled. Reply *menu* to see options again.');
+      // user canceled at confirm step - clear session
+      await clearSessionOnProfile(profile._id);
+      return safeSendText(clinicPhoneNumberId, profile.phone, '❌ Booking cancelled. Reply *menu* to see options again.');
     }
   }
 }
 
-// cancel latest upcoming
-async function handleCancel(from, session, clinicPhoneNumberId, clinicId) {
-  const rec = await Record.findOne({ phone: from, clinicId, status: { $in: ['booked','confirmed'] } }).sort({ appointmentDate: 1 });
-  if (!rec) {
-    return whatsapp.sendText(clinicPhoneNumberId, from, 'ℹ️ No upcoming appointment found to cancel.');
+async function handleCancel(profile, clinicPhoneNumberId, from) {
+  try {
+    const rec = await Record.findOne({ phone: profile.phone, clinicId: profile.clinicId, status: { $in: ['booked','confirmed'] } }).sort({ appointmentDate: 1 });
+    if (!rec) {
+      return safeSendText(clinicPhoneNumberId, from, 'ℹ️ No upcoming appointment found to cancel.');
+    }
+    rec.status = 'cancelled';
+    await rec.save();
+    // also clear session on profile
+    await clearSessionOnProfile(profile._id);
+    return safeSendText(clinicPhoneNumberId, from, `✅ Your appointment on ${formatDate(rec.appointmentDate)} at ${rec.timeSlot} has been cancelled.`);
+  } catch (err) {
+    console.error('Error in handleCancel:', err);
+    return safeSendText(clinicPhoneNumberId, from, '❌ Unable to cancel appointment right now.');
   }
-  rec.status = 'cancelled';
-  await rec.save();
-  session.state = 'idle';
-  session.data = { clinicId: rec.clinicId, clinicName: rec.clinicName };
-  await session.save();
-  return whatsapp.sendText(clinicPhoneNumberId, from, `✅ Your appointment on ${formatDate(rec.appointmentDate)} at ${rec.timeSlot} has been cancelled.`);
 }
 
-async function handleStatus(from, session, clinicPhoneNumberId, clinicId) {
-  const rec = await Record.findOne({ phone: from, clinicId }).sort({ appointmentDate: -1 });
-  if (!rec) return whatsapp.sendText(clinicPhoneNumberId, from, 'ℹ️ No appointments found yet. Reply *1* to book.');
-  return whatsapp.sendText(clinicPhoneNumberId, from, `📌 Latest appointment:
+async function handleStatus(profile, clinicPhoneNumberId, from) {
+  try {
+    const rec = await Record.findOne({ phone: profile.phone, clinicId: profile.clinicId }).sort({ appointmentDate: -1 });
+    if (!rec) return safeSendText(clinicPhoneNumberId, from, 'ℹ️ No appointments found yet. Reply *1* to book.');
+    return safeSendText(clinicPhoneNumberId, from, `📌 Latest appointment:
 🦷 ${rec.service}
 📅 ${formatDate(rec.appointmentDate)}
 ⏰ ${rec.timeSlot}
 🛠 Status: ${rec.status}`);
-}
-
-function parseDate(text) {
-  const m = text.match(/^(\d{1,2})-(\d{1,2})-(\d{4})$/);
-  if (!m) return null;
-  const [_, dd, mm, yyyy] = m;
-  const d = dayjs(`${yyyy}-${mm}-${dd}`);
-  if (!d.isValid()) return null;
-  return d;
-}
-function formatDate(date) {
-  return dayjs(date).format('DD MMM YYYY');
+  } catch (err) {
+    console.error('Error in handleStatus:', err);
+    return safeSendText(clinicPhoneNumberId, from, '❌ Unable to fetch status right now.');
+  }
 }
 
 module.exports = { handleIncomingMessage };
