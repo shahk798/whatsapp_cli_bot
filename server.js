@@ -70,28 +70,32 @@ app.get('/', (req, res) => {
  * - List records for clinic
  * - Get / Create / Update record (single collection)
  */
+// add near your other CRM endpoints in server.js
 const Record = require('./models/Record');
 
-// list records for clinic (query filters supported)
-app.get('/crm/:clinicId/records', async (req, res) => {
+// list patient profiles for clinic (appointmentDate == null)
+app.get('/crm/:clinicId/patients', async (req, res) => {
   try {
     const { clinicId } = req.params;
-    const { status, phone, from, to, limit = 500 } = req.query;
-    const q = { clinicId };
-    if (status) q.status = status;
-    if (phone) q.phone = phone;
-    if (from || to) {
-      q.appointmentDate = {};
-      if (from) q.appointmentDate.$gte = new Date(from);
-      if (to) q.appointmentDate.$lte = new Date(to);
+    const { limit = 500, q } = req.query;
+
+    const query = { clinicId, appointmentDate: null };
+    // optional search by name or phone (q)
+    if (q) {
+      query.$or = [
+        { patientName: { $regex: q, $options: 'i' } },
+        { phone: { $regex: q, $options: 'i' } }
+      ];
     }
-    const records = await Record.find(q).sort({ appointmentDate: -1 }).limit(Number(limit));
-    return res.json({ success: true, data: records });
+
+    const patients = await Record.find(query).sort({ updatedAt: -1 }).limit(Number(limit));
+    return res.json({ success: true, data: patients });
   } catch (err) {
-    console.error(err);
+    console.error('Error fetching patient profiles:', err);
     return res.status(500).json({ success: false, error: 'Server error' });
   }
 });
+
 
 // get single record
 app.get('/crm/:clinicId/record/:id', async (req, res) => {

@@ -13,10 +13,13 @@ const RecordSchema = new mongoose.Schema({
   // appointment/service info
   service: { type: String, default: '' },
   price: { type: Number, default: Number(process.env.DEFAULT_PRICE || 0) },
-  appointmentDate: { type: Date, required: true },
+
+  // allow empty appointmentDate for profile-only records
+  appointmentDate: { type: Date, default: null },
   timeSlot: { type: String, default: '' },
 
-  status: { type: String, enum: ['booked','confirmed','completed','cancelled','no-show'], default: 'booked' },
+  // 'profile' used when the document is a patient profile (no appointment)
+  status: { type: String, enum: ['booked','confirmed','completed','cancelled','no-show','profile'], default: 'profile' },
 
   source: { type: String, default: 'whatsapp' },
   metadata: { type: Object, default: {} },

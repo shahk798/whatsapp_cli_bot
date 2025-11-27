@@ -57,6 +57,35 @@ async function handleIncomingMessage(message, value, clinic) {
     session = await Session.create({ phone: from, clinicId, data: { clinicId, clinicName } });
   }
 
+  // ---------------------------
+  // Upsert patient profile (profile doc: appointmentDate == null)
+  // ---------------------------
+  try {
+    const profileUpdate = {
+      clinicId,
+      clinicName,
+      phone: from,
+      source: 'whatsapp',
+      metadata: value?.contacts?.[0] || value?.metadata || {}
+    };
+
+    // include name/email if available in the session data
+    if (session.data?.name) profileUpdate.patientName = session.data.name;
+    if (session.data?.email) profileUpdate.email = session.data.email;
+
+    // remove undefined fields (defensive)
+    Object.keys(profileUpdate).forEach(k => profileUpdate[k] === undefined && delete profileUpdate[k]);
+
+    // Upsert profile-only record (appointmentDate: null). This ensures a patient profile exists.
+    await Record.findOneAndUpdate(
+      { clinicId, phone: from, appointmentDate: null },
+      { $set: profileUpdate, $setOnInsert: { createdAt: new Date() } },
+      { upsert: true, new: true }
+    );
+  } catch (err) {
+    console.error('Failed to upsert patient profile:', err);
+  }
+
   // reset on greeting
   if (/^(hi|hello|menu|start|hey)$/i.test(text)) {
     session.state = 'idle';
@@ -138,6 +167,16 @@ async function handleBookingFlow(from, text, session, clinicPhoneNumberId, clini
     session.data.name = text;
     session.state = 'booking_service';
     await session.save();
+    // update profile name immediately
+    try {
+      await Record.findOneAndUpdate(
+        { clinicId, phone: from, appointmentDate: null },
+        { $set: { patientName: text, updatedAt: new Date() } },
+        { upsert: true }
+      );
+    } catch (err) {
+      console.error('Failed to update profile name during booking:', err);
+    }
     return whatsapp.sendText(clinicPhoneNumberId, from, 'Which service do you want? (Cleaning / Whitening / RCT / Braces / Implant) 🦷');
   }
 
@@ -185,7 +224,7 @@ Reply *yes* to confirm or *no* to cancel.`;
         clinicName: session.data.clinicName || clinicName,
         patientName: session.data.name,
         phone: from,
-        email: session.data.email || '',
+        patientEmail: session.data.email || '',
         service: session.data.service,
         price: Number(session.data.price || process.env.DEFAULT_PRICE || 0),
         appointmentDate: new Date(session.data.date),
@@ -195,7 +234,36 @@ Reply *yes* to confirm or *no* to cancel.`;
         metadata: session.data.metadata || {}
       };
 
-      const rec = await Record.create(recPayload);
+      // create appointment record
+      let rec;
+      try {
+        rec = await Record.create(recPayload);
+      } catch (err) {
+        console.error('Failed to create appointment record:', err);
+        await whatsapp.sendText(clinicPhoneNumberId, from, '❌ Something went wrong while booking. Please try again later.');
+        session.state = 'idle';
+        session.data = { clinicId, clinicName };
+        await session.save();
+        return;
+      }
+
+      // update patient profile record (appointmentDate: null) with latest info
+      try {
+        await Record.findOneAndUpdate(
+          { clinicId: rec.clinicId, phone: rec.phone, appointmentDate: null },
+          {
+            $set: {
+              clinicName: rec.clinicName,
+              patientName: rec.patientName,
+              email: rec.patientEmail || '',
+              updatedAt: new Date()
+            }
+          },
+          { upsert: false }
+        );
+      } catch (err) {
+        console.error('Failed to update patient profile after booking:', err);
+      }
 
       // notify clinic staff
       const clinic = clinicsConfig.findClinicById(rec.clinicId);
