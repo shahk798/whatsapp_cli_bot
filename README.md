@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Lumonex WhatsApp Chatbot (Multi-clinic)
 
 ## Quick setup
@@ -31,3 +32,18 @@
 - Add authentication for staff (JWT / API key).
 - Add email notifications as fallback.
 - Add audit logs for edits.
+=======
+# WhatsApp Cloud Bot (MongoDB)
+
+Node.js + Express bot for WhatsApp Cloud API. Stores sessions and appointments in MongoDB.
+
+## Run locally
+1. Copy `.env.template` → `.env` and fill values.
+2. `npm install`
+3. `npm run dev` (nodemon) or `npm start`
+
+## Webhook endpoints
+- `GET /webhook` — Meta verify
+- `POST /webhook` — receive messages (JSON)
+
+>>>>>>> e20e93a863e53ba526b09c50f43bee7ce030954e

@@ -1,3 +1,11 @@
 node_modules/
 .env
+<<<<<<< HEAD
 .DS_Store
+=======
+npm-debug.log
+.DS_Store
+.vscode/
+logs/
+coverage/
+>>>>>>> e20e93a863e53ba526b09c50f43bee7ce030954e
