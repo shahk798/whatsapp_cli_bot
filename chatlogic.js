@@ -1,4 +1,4 @@
-// chatlogic_professional.js
+// chatlogic.js
 // Professional, polished chat flow for WhatsApp clinic assistant
 // Flow: greeting -> ask patient name -> main menu (services/prices, book, hours, address, FAQs)
 // Booking collects: phone number, email, service, appointment date, time -> confirm -> create appointment
@@ -16,24 +16,44 @@ dayjs.extend(utc);
 const SESSION_TTL_MIN = 30;            // session expiry (minutes)
 const DEFAULT_PRICE = Number(process.env.DEFAULT_PRICE || 0);
 
-// Services list (editable)
+// Services list (editable) - you asked to add more services
 const SERVICES = [
   { key: 'cleaning', name: 'Cleaning', price: 500 },
+  { key: 'scaling', name: 'Scaling & Polishing', price: 800 },
   { key: 'whitening', name: 'Whitening', price: 2000 },
   { key: 'braces', name: 'Braces', price: 35000 },
   { key: 'rct', name: 'RCT', price: 3000 },
-  { key: 'implant', name: 'Implant', price: 25000 }
+  { key: 'implant', name: 'Implant', price: 25000 },
+  { key: 'filling', name: 'Filling', price: 1500 },
+  { key: 'extraction', name: 'Extraction', price: 1200 },
+  { key: 'veneers', name: 'Veneers', price: 18000 },
+  { key: 'dentures', name: 'Dentures', price: 12000 },
+  { key: 'pediatric', name: 'Pediatric Dentistry', price: 1000 }
+];
+
+// Frequently Asked Questions (editable)
+const FAQS = [
+  { q: "What services do you offer?", a: "We offer Cleaning, Scaling & Polishing, Whitening, Braces, RCT, Implants, Fillings, Extractions, Veneers, Dentures, Pediatric Dentistry and more. Reply with the number to learn more." },
+  { q: "What are your clinic hours?", a: "Our clinic operates Monday to Saturday, 10:00 AM — 8:00 PM. We are closed on Sundays. For urgent care please call the clinic." },
+  { q: "Where is your clinic located?", a: "We are located at: [Add Clinic Address Here]. You can share your current location and we will guide you with directions." },
+  { q: "How can I book an appointment?", a: "You can book via this WhatsApp assistant — choose Book Appointment from the menu, select service, date & time and confirm. You will receive a confirmation message with your appointment ID." },
+  { q: "What payment methods do you accept?", a: "We accept Cash, UPI, Debit/Credit Cards and Online Payments." },
+  { q: "Do you provide emergency dental care?", a: "Yes — we handle urgent cases like severe pain, bleeding or trauma. Call the clinic for priority assistance." },
+  { q: "Do you treat children?", a: "Yes — we provide pediatric dental care with a child-friendly environment." },
+  { q: "Is teeth whitening safe?", a: "Professional whitening is safe when performed by a dentist using clinically approved products. We assess tooth sensitivity first." },
+  { q: "How often should I visit the dentist?", a: "Routine check-ups every 6 months are recommended for most patients. Some treatments require more frequent follow-ups." },
+  { q: "Do you offer follow-up or warranty for treatments?", a: "Yes — many restorative treatments include follow-up care. Specific warranty terms depend on the treatment and will be discussed during consultation." }
 ];
 
 // Polished Main menu (professional tone, aligned spacing)
 const MAIN_MENU_TEXT = [
-  '*The services we serve.📋 Main Menu*',
+  '📋 *Main Menu*',
   'Please reply with a number or keyword:',
-  '1 — Services & Pricing (reply: 1 / services / price)',
-  '2 — Book Appointment     (reply: 2 / book / appointment)',
-  '3 — Clinic Hours         (reply: 3 / hours / timings)',
-  '4 — Clinic Address       (reply: 4 / address / location)',
-  '5 — FAQs                 (reply: 5 / faq / help)',
+  '1 — 🩺 Services & Pricing ',
+  '2 — 🗓️ Book Appointment    ',
+  '3 — ⏳ Clinic Hours         ',
+  '4 — 📍 Clinic Address       ',
+  '5 — ❔ FAQs                ',
   '',
   'Type *menu* anytime to return here.'
 ].join('\n');
@@ -188,8 +208,7 @@ async function handleIncomingMessage(message, value, clinicFromCaller) {
 
       const greetMsg = [
         `Hello! 👋`,
-        `I'm the assistant for *${clinicName}*.`,
-        `How can I Help you today.`,
+        `Welcome to *${clinicName}*. I'm the clinic assistant how can i help you .`,
         '',
         `May I know your full name, please?`,
         '',
@@ -251,7 +270,7 @@ async function handleIncomingMessage(message, value, clinicFromCaller) {
   if (/address|location|where/i.test(text)) return routeMenu('4', profile, session, clinicPhoneNumberId);
   if (/faq|help|question/i.test(text)) return routeMenu('5', profile, session, clinicPhoneNumberId);
 
-  // Booking flow continuation
+  // Booking & FAQ flow continuation
   switch (session.state) {
     case 'booking_service':
       return handleBookingServiceInput(profile, session, text, clinicPhoneNumberId);
@@ -265,8 +284,10 @@ async function handleIncomingMessage(message, value, clinicFromCaller) {
       return handleBookingTimeInput(profile, session, text, clinicPhoneNumberId);
     case 'booking_confirm':
       return handleBookingConfirmInput(profile, session, text, clinicPhoneNumberId);
+    case 'faq_select':
+      return handleFaqSelectionInput(profile, session, text, clinicPhoneNumberId);
     default:
-      return safeSendText(clinicPhoneNumberId, from, `I didn't understand that. ${MAIN_MENU_TEXT}`);
+      return safeSendText(clinicPhoneNumberId, from, `I didn't understand that.\n\n${MAIN_MENU_TEXT}`);
   }
 }
 
@@ -307,15 +328,23 @@ async function routeMenu(opt, profile, session, clinicPhoneNumberId) {
       return safeSendText(clinicPhoneNumberId, from, `📍 *Clinic Address*: ${address}`);
     }
     case '5': {
-      session.state = 'idle';
+      // show numbered FAQ list and move session to faq_select
+      session.state = 'faq_select';
+      session.data = session.data || {};
       await saveSession(profile._id, session);
-      const faqs = [
-        '*How do I book?* — Reply "book" or press 2.',
-        '*What are your hours?* — Reply "hours" or press 3.',
-        '*Do you accept insurance?* — Please call reception to confirm.',
-        '*How long is a cleaning?* — Usually 30–45 minutes.'
-      ].join('\n\n');
-      return safeSendText(clinicPhoneNumberId, profile.phone, `❓ *FAQs*\n\n${faqs}`);
+
+      // Format the FAQs as numbered list
+      const faqList = FAQS.map((f, i) => `${i+1}. ${f.q}`).join('\n\n');
+      const faqMsg = [
+        '❓ *Frequently Asked Questions*',
+        '',
+        faqList,
+        '',
+        'Reply with the *number* of the question you want the answer to (for example: 2).',
+        'Type *menu* to return to the main menu.'
+      ].join('\n');
+
+      return safeSendText(clinicPhoneNumberId, profile.phone, faqMsg);
     }
     default:
       session.state = 'idle';
@@ -428,7 +457,7 @@ async function handleBookingTimeInput(profile, session, text, clinicPhoneNumberI
   const emailText = session.data.email || '—';
 
   const confirmMsg = [
-    '🎉✨ *Appointment Confirmed!*',
+    '🔔 *Please confirm your appointment*',
     '',
     `👤 *Patient:* ${name}`,
     `📞 *Phone:* ${phoneText}`,
@@ -452,6 +481,7 @@ async function handleBookingConfirmInput(profile, session, text, clinicPhoneNumb
     return safeSendText(clinicPhoneNumberId, from, '❌ Booking cancelled. Type *menu* to see options or *book* to start again.');
   }
   if (t === 'yes' || t === 'y') {
+    // Final validation
     const parsed = parseDateStrict(session.data.date);
     if (!parsed || !parsed.isValid()) {
       session.state = 'booking_date';
@@ -466,6 +496,7 @@ async function handleBookingConfirmInput(profile, session, text, clinicPhoneNumb
       return safeSendText(clinicPhoneNumberId, from, '❗ The time looks invalid. Please send time like 10:00 or 10 AM.');
     }
 
+    // Build appointment record payload
     const apptPayload = {
       clinicId: profile.clinicId,
       clinicName: profile.clinicName,
@@ -481,6 +512,7 @@ async function handleBookingConfirmInput(profile, session, text, clinicPhoneNumb
       metadata: {}
     };
 
+    // Prevent duplicate booking for same phone/date/time (basic check)
     try {
       const existing = await Record.findOne({
         phone: apptPayload.phone,
@@ -501,7 +533,9 @@ async function handleBookingConfirmInput(profile, session, text, clinicPhoneNumb
     } catch (err) {
       console.error('Duplicate check error:', err);
     }
-let apptRec;
+
+    // Create appointment record
+    let apptRec;
     try {
       apptRec = await Record.create(apptPayload);
     } catch (err) {
@@ -509,6 +543,7 @@ let apptRec;
       return safeSendText(clinicPhoneNumberId, from, '❌ Something went wrong while saving your appointment. Please try again later.');
     }
 
+    // Update profile: set patientName/email and clear session
     try {
       await Record.findByIdAndUpdate(profile._id, {
         $set: { patientName: apptPayload.patientName, email: apptPayload.email, updatedAt: new Date() },
@@ -518,6 +553,7 @@ let apptRec;
       console.error('Failed to update/clear profile after booking:', err);
     }
 
+    // Notify clinic staff (if contactNumber configured)
     try {
       const clinicObj = clinicsConfig.findClinicById(apptRec.clinicId);
       if (clinicObj && clinicObj.contactNumber) {
@@ -535,13 +571,71 @@ let apptRec;
       console.error('Failed to notify clinic staff:', err);
     }
 
-    const confText = [`🎉 *Appointment Confirmed!*`, `Your appointment is scheduled for *${dayjs(apptRec.appointmentDate).format('DD MMM YYYY')}* at *${apptRec.timeSlot}*.`, `Appointment ID: ${apptRec._id}`, '', 'We look forward to seeing you — if you need to reschedule, reply *menu* and choose Booking.'].join('\n');
+    // Confirm to user
+    const confText = [
+      '🎉 *Appointment Confirmed!*',
+      `Your appointment is scheduled for *${dayjs(apptRec.appointmentDate).format('DD MMM YYYY')}* at *${apptRec.timeSlot}*.`,
+      `Appointment ID: ${apptRec._id}`,
+      '',
+      'We look forward to seeing you — if you need to reschedule, reply *menu* and choose Booking.'
+    ].join('\n');
+
     return safeSendText(clinicPhoneNumberId, from, confText);
   }
 
+  // If not clearly yes/no
   return safeSendText(clinicPhoneNumberId, from, 'Please reply with *yes* to confirm or *no* to cancel.');
 }
 
+// ---------- FAQ handlers ----------
+async function handleFaqSelectionInput(profile, session, text, clinicPhoneNumberId) {
+  const from = profile.phone;
+  const t = text.trim().toLowerCase();
+
+  // allow returning to menu
+  if (t === 'menu' || t === 'back' || t === '0') {
+    session.state = 'idle';
+    session.data = { clinicId: session.data?.clinicId || profile.clinicId, clinicName: session.data?.clinicName || profile.clinicName };
+    await saveSession(profile._id, session);
+    return safeSendText(clinicPhoneNumberId, from, MAIN_MENU_TEXT);
+  }
+
+  // accept numeric choice
+  const numMatch = t.match(/^(\d{1,2})$/); // supports up to 99 FAQs
+  if (numMatch) {
+    const idx = parseInt(numMatch[1], 10) - 1;
+    if (idx >= 0 && idx < FAQS.length) {
+      const faq = FAQS[idx];
+      // reply with answer and offer next steps
+      const reply = [
+        `❓ *Q:* ${faq.q}`,
+        '',
+        `💡 *A:* ${faq.a}`,
+        '',
+        'Reply with another FAQ number to read more, or type *menu* to go back to the main menu.'
+      ].join('\n');
+      // keep session in faq_select so user can choose again
+      session.state = 'faq_select';
+      await saveSession(profile._id, session);
+      return safeSendText(clinicPhoneNumberId, from, reply);
+    } else {
+      return safeSendText(clinicPhoneNumberId, from, `❗ Invalid selection. Please reply with a number between 1 and ${FAQS.length}, or type *menu* to return to the main menu.`);
+    }
+  }
+
+  // if text includes keywords try to match to a FAQ
+  for (let i = 0; i < FAQS.length; i++) {
+    const q = FAQS[i].q.toLowerCase();
+    if (t.includes('hour') && q.includes('hours')) return handleFaqSelectionInput(profile, session, String(i+1), clinicPhoneNumberId);
+    if (t.includes('where') && q.includes('located')) return handleFaqSelectionInput(profile, session, String(i+1), clinicPhoneNumberId);
+    if (t.includes('book') && q.includes('book')) return handleFaqSelectionInput(profile, session, String(i+1), clinicPhoneNumberId);
+  }
+
+  // fallback
+  return safeSendText(clinicPhoneNumberId, from, `I didn't understand that. Reply with a FAQ number (1-${FAQS.length}) or type *menu* to return to the main menu.`);
+}
+
+// ---------- Helper: format phone for prompts ----------
 function formatPhoneForPrompt(p) {
   if (!p) return '';
   const cleaned = normalizePhone(p) || p;
