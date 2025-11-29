@@ -1,7 +1,7 @@
-// chatlogic.js
-// Professional chat flow:
-// greeting -> ask patient name -> main menu (services/prices, book, hours, address, FAQs)
-// booking collects: phone number, email, service, appointment date, time -> confirm -> create appointment
+// chatlogic_professional.js
+// Professional, polished chat flow for WhatsApp clinic assistant
+// Flow: greeting -> ask patient name -> main menu (services/prices, book, hours, address, FAQs)
+// Booking collects: phone number, email, service, appointment date, time -> confirm -> create appointment
 // Session stored on profile document (Record.session). Appointment created as separate Record (appointmentDate != null).
 
 const Record = require('./models/Record');
@@ -25,15 +25,20 @@ const SERVICES = [
   { key: 'implant', name: 'Implant', price: 25000 }
 ];
 
-// Main menu (professional + numbers + keywords)
-const MAIN_MENU_TEXT = `📋 *Main Menu* — reply with a number or keyword:
-1️⃣ *Services & Pricing*  — (reply "1" or "services" / "price")
-2️⃣ *Book Appointment*    — (reply "2" or "book" / "appointment")
-3️⃣ *Clinic Hours*        — (reply "3" or "hours" / "timings")
-4️⃣ *Clinic Address*      — (reply "4" or "address" / "location")
-5️⃣ *FAQs*                — (reply "5" or "faq" / "help")
-You can type *menu* anytime to return here.`;
+// Polished Main menu (professional tone, aligned spacing)
+const MAIN_MENU_TEXT = [
+  '*The services we serve.📋 Main Menu*',
+  'Please reply with a number or keyword:',
+  '1 — Services & Pricing (reply: 1 / services / price)',
+  '2 — Book Appointment     (reply: 2 / book / appointment)',
+  '3 — Clinic Hours         (reply: 3 / hours / timings)',
+  '4 — Clinic Address       (reply: 4 / address / location)',
+  '5 — FAQs                 (reply: 5 / faq / help)',
+  '',
+  'Type *menu* anytime to return here.'
+].join('\n');
 
+// ----------------- Utility helpers -----------------
 function textFromMessage(message) {
   if (!message) return '';
   if (message.text?.body) return message.text.body.trim();
@@ -63,7 +68,6 @@ function parseDateStrict(text) {
 function normalizeTime(text) {
   if (!text) return null;
   let t = text.replace(/\./g, ':').trim();
-  // try strict formats first
   const parsed = dayjs(t, ['H:mm', 'HH:mm', 'h:mm A', 'h A', 'ha', 'H'], true);
   if (parsed.isValid()) return parsed.format('HH:mm');
   const loose = dayjs(t);
@@ -77,15 +81,12 @@ function validEmail(email) {
 }
 function normalizePhone(p) {
   if (!p) return null;
-  // remove spaces, +, hyphens, parentheses
   let cleaned = p.replace(/[\s+\-()]/g, '');
-  // if starts with 0 or country code, accept common lengths
   if (!/^\d+$/.test(cleaned)) return null;
   return cleaned;
 }
 function validPhoneNumber(p) {
   if (!p) return false;
-  // accept 10-15 digits (common)
   return /^\d{10,15}$/.test(p);
 }
 
@@ -177,23 +178,42 @@ async function handleIncomingMessage(message, value, clinicFromCaller) {
     await saveSession(profile._id, session);
   }
 
-  // greet / ask name flow (priority)
+  // ---------- Friendly & professional greeting ----------
   if (/^(hi|hello|hey|start|menu)$/i.test(textLower)) {
-    // if we don't have a patientName for this profile, ask it
+    // friendly branded greeting that asks for name and sets expectations
     if (!profile.patientName || profile.patientName.trim() === '') {
       session.state = 'asking_name';
       session.data = { clinicId, clinicName };
       await saveSession(profile._id, session);
-      return safeSendText(clinicPhoneNumberId, from, '👋 Hello — may I have the *patient full name* please?');
+
+      const greetMsg = [
+        `Hello! 👋`,
+        `I'm the assistant for *${clinicName}*.`,
+        `How can I Help you today.`,
+        '',
+        `May I know your full name, please?`,
+        '',
+        `_Tip: reply with your name (e.g. John Doe)._`
+      ].join('\n');
+
+      return safeSendText(clinicPhoneNumberId, from, greetMsg);
     } else {
       session.state = 'idle';
       session.data = { clinicId, clinicName };
       await saveSession(profile._id, session);
-      return safeSendText(clinicPhoneNumberId, from, `Hi *${profile.patientName}* 👋\n` + MAIN_MENU_TEXT);
+
+      const welcome = [
+        `Welcome back, *${profile.patientName}* 👋`,
+        `You're chatting with *${clinicName}*'s assistant. How can I help you today?`,
+        '',
+        MAIN_MENU_TEXT
+      ].join('\n');
+
+      return safeSendText(clinicPhoneNumberId, from, welcome);
     }
   }
 
-  // allow 'menu' anytime
+  // allow 'menu' anytime (polished)
   if (textLower === 'menu') {
     session.state = 'idle';
     session.data = { clinicId, clinicName };
@@ -201,37 +221,37 @@ async function handleIncomingMessage(message, value, clinicFromCaller) {
     return safeSendText(clinicPhoneNumberId, from, MAIN_MENU_TEXT);
   }
 
-  // If asking_name state
+  // If asking_name state: save name and continue with polished confirmation
   if (session.state === 'asking_name') {
     const name = text;
     if (!name || name.length < 2) {
-      return safeSendText(clinicPhoneNumberId, from, '❗ Please send the full patient name (at least 2 characters).');
+      return safeSendText(clinicPhoneNumberId, from, '❗ Please send your full name (at least 2 characters).');
     }
-    // save to profile
     try {
       await Record.findByIdAndUpdate(profile._id, { $set: { patientName: name, updatedAt: new Date() } });
     } catch (err) {
       console.error('Failed to save patientName:', err);
     }
     session.state = 'idle';
-    session.data = { clinicId, clinicName };
+    session.data = { clinicId: session.data?.clinicId || clinicId, clinicName: session.data?.clinicName || clinicName };
     await saveSession(profile._id, session);
-    return safeSendText(clinicPhoneNumberId, from, `Thanks *${name}* —\n` + MAIN_MENU_TEXT);
+
+    const thanks = [`Thanks *${name}*! ✅`, '', MAIN_MENU_TEXT].join('\n');
+    return safeSendText(clinicPhoneNumberId, from, thanks);
   }
 
-  // Map number selection or keywords to menu options
+  // Map number selection or keywords to menu options (robust)
   const numberMatch = text.match(/^[1-5]$/);
   if (numberMatch) {
     return routeMenu(numberMatch[0], profile, session, clinicPhoneNumberId);
   }
-  // keyword routing (book/services/hours/address/faqs)
   if (/book|appointment|slot/i.test(text)) return routeMenu('2', profile, session, clinicPhoneNumberId);
   if (/service|services|price|pricing/i.test(text)) return routeMenu('1', profile, session, clinicPhoneNumberId);
   if (/hour|time|timings|opening|open/i.test(text)) return routeMenu('3', profile, session, clinicPhoneNumberId);
   if (/address|location|where/i.test(text)) return routeMenu('4', profile, session, clinicPhoneNumberId);
   if (/faq|help|question/i.test(text)) return routeMenu('5', profile, session, clinicPhoneNumberId);
 
-  // If we are in booking flow states, continue accordingly
+  // Booking flow continuation
   switch (session.state) {
     case 'booking_service':
       return handleBookingServiceInput(profile, session, text, clinicPhoneNumberId);
@@ -246,51 +266,47 @@ async function handleIncomingMessage(message, value, clinicFromCaller) {
     case 'booking_confirm':
       return handleBookingConfirmInput(profile, session, text, clinicPhoneNumberId);
     default:
-      // Not a menu number, not in a booking state — guide the user
       return safeSendText(clinicPhoneNumberId, from, `I didn't understand that. ${MAIN_MENU_TEXT}`);
   }
 }
 
-// ---------- Menu routing ----------
+// ---------- Menu routing (polished responses) ----------
 async function routeMenu(opt, profile, session, clinicPhoneNumberId) {
   const from = profile.phone;
   switch (opt) {
-    case '1': { // Services & Pricing
+    case '1': {
       session.state = 'idle';
       session.data = session.data || {};
       await saveSession(profile._id, session);
-      const msg = `🦷 *Services & Pricing*\n\n${servicesListText()}\n\nReply with the service name or number to start booking.`;
+      const msg = [`🦷 *Services & Pricing*`, '', servicesListText(), '', 'Reply with the service name or number to start booking.'].join('\n');
       return safeSendText(clinicPhoneNumberId, from, msg);
     }
-    case '2': { // Book Appointment
-      // start booking: prefer existing profile.patientName
-      session.state = 'booking_phone'; // we will ask phone first (or confirm)
+    case '2': {
+      session.state = 'booking_phone';
       session.data = session.data || {};
-      // prefill name if exists
       if (profile.patientName) session.data.name = profile.patientName;
       await saveSession(profile._id, session);
-      // Prompt: use WA number by default, give option to enter alternative phone
       const defaultPhone = profile.phone || '';
       const prompt = defaultPhone
-        ? `📞 We have *${formatPhoneForPrompt(defaultPhone)}* as your contact number. Reply with a different phone number to use it for this booking, or type *ok* to use the shown number.`
-        : '📞 Please provide the patient phone number (digits only, include country code).';
+        ? `📞 We have *${formatPhoneForPrompt(defaultPhone)}* on file for you. Reply with a different number to change it, or type *ok* to use this number.`
+        : '📞 Please provide the patient phone number (include country code). Example: 919812345678';
       return safeSendText(clinicPhoneNumberId, from, prompt);
     }
-    case '3': { // Clinic Hours
+    case '3': {
       session.state = 'idle';
       await saveSession(profile._id, session);
       const clinicObj = clinicsConfig.findClinicById(profile.clinicId) || {};
       const hours = clinicObj.hours || 'Mon–Sat 9:00 AM – 7:00 PM';
       return safeSendText(clinicPhoneNumberId, from, `⏰ *Clinic Hours*: ${hours}`);
     }
-    case '4': { // Clinic Address
+    case '4': {
       session.state = 'idle';
       await saveSession(profile._id, session);
       const clinicObj = clinicsConfig.findClinicById(profile.clinicId) || {};
       const address = clinicObj.address || 'Address not available. Please contact reception.';
       return safeSendText(clinicPhoneNumberId, from, `📍 *Clinic Address*: ${address}`);
     }
-    case '5': { // FAQs
+    case '5': {
       session.state = 'idle';
       await saveSession(profile._id, session);
       const faqs = [
@@ -308,12 +324,10 @@ async function routeMenu(opt, profile, session, clinicPhoneNumberId) {
   }
 }
 
-// ---------- Booking handlers ----------
-// booking_phone: ask or confirm phone to use for booking
+// ---------- Booking handlers (polished prompts) ----------
 async function handleBookingPhoneInput(profile, session, text, clinicPhoneNumberId) {
   const from = profile.phone;
   const trimmed = text.toLowerCase();
-  // if user replied 'ok' or 'use' or blank -> accept default profile phone
   if (trimmed === 'ok' || trimmed === 'use' || trimmed === '' || trimmed === 'yes') {
     const phone = profile.phone;
     session.data.phone = phone;
@@ -321,7 +335,6 @@ async function handleBookingPhoneInput(profile, session, text, clinicPhoneNumber
     await saveSession(profile._id, session);
     return safeSendText(clinicPhoneNumberId, from, '✉️ Please provide an email address for confirmation (or type "skip").');
   }
-  // else, expect a phone number
   const cleaned = normalizePhone(text);
   if (!cleaned || !validPhoneNumber(cleaned)) {
     return safeSendText(clinicPhoneNumberId, from, '❗ Please send a valid phone number (digits only, include country code). Example: 919812345678');
@@ -332,7 +345,6 @@ async function handleBookingPhoneInput(profile, session, text, clinicPhoneNumber
   return safeSendText(clinicPhoneNumberId, from, '✉️ Please provide an email address for confirmation (or type "skip").');
 }
 
-// booking_email: collect email (optional)
 async function handleBookingEmailInput(profile, session, text, clinicPhoneNumberId) {
   const from = profile.phone;
   const trimmed = text.trim();
@@ -359,14 +371,9 @@ async function presentServiceOptions(profile, session, clinicPhoneNumberId) {
   return safeSendText(clinicPhoneNumberId, from, `🦷 *Select a service*:\n\n${list}\n\nReply with the service name or number (e.g. "Braces" or "3").`);
 }
 
-function servicesListText() {
-  return SERVICES.map((s, i) => `${i+1}. ${s.name} — ₹${s.price.toLocaleString()}`).join('\n');
-}
-
 async function handleBookingServiceInput(profile, session, text, clinicPhoneNumberId) {
   const from = profile.phone;
   const t = text.trim();
-  // number selection?
   const num = t.match(/^\d+$/);
   if (num) {
     const idx = parseInt(num[0], 10) - 1;
@@ -378,7 +385,6 @@ async function handleBookingServiceInput(profile, session, text, clinicPhoneNumb
       return safeSendText(clinicPhoneNumberId, from, '📅 Please provide preferred appointment date (DD-MM-YYYY).');
     }
   }
-  // match by name (loose)
   const chosen = SERVICES.find(s => s.name.toLowerCase() === t.toLowerCase() || s.key === t.toLowerCase());
   if (chosen) {
     session.data.service = chosen.name;
@@ -387,7 +393,6 @@ async function handleBookingServiceInput(profile, session, text, clinicPhoneNumb
     await saveSession(profile._id, session);
     return safeSendText(clinicPhoneNumberId, from, '📅 Please provide preferred appointment date (DD-MM-YYYY).');
   }
-  // not recognized -> ask again
   return safeSendText(clinicPhoneNumberId, from, `❗ I didn't recognize that service. Please reply with the service name or number:\n\n${servicesListText()}`);
 }
 
@@ -397,7 +402,6 @@ async function handleBookingDateInput(profile, session, text, clinicPhoneNumberI
   if (!parsed || !parsed.isValid()) {
     return safeSendText(clinicPhoneNumberId, from, '❗ Invalid date. Send like *28-11-2025* (DD-MM-YYYY).');
   }
-  // store ISO date (midnight)
   session.data.date = parsed.startOf('day').toISOString();
   session.state = 'booking_time';
   await saveSession(profile._id, session);
@@ -414,7 +418,7 @@ async function handleBookingTimeInput(profile, session, text, clinicPhoneNumberI
   session.state = 'booking_confirm';
   await saveSession(profile._id, session);
 
-  // Build confirmation summary
+  // Polished confirmation summary
   const name = session.data.name || profile.patientName || '—';
   const service = session.data.service || '—';
   const price = session.data.price !== undefined ? `₹${Number(session.data.price).toLocaleString()}` : `₹${DEFAULT_PRICE}`;
@@ -423,17 +427,20 @@ async function handleBookingTimeInput(profile, session, text, clinicPhoneNumberI
   const phoneText = session.data.phone || profile.phone || '—';
   const emailText = session.data.email || '—';
 
-  const confirmMsg =
-`✅ *Confirm Appointment*
-👤 Patient: ${name}
-📞 Phone: ${phoneText}
-✉️ Email: ${emailText}
-🦷 Service: ${service}
-📅 Date: ${dateText}
-⏰ Time: ${timeText}
-💰 Price: ${price}
+  const confirmMsg = [
+    '🎉✨ *Appointment Confirmed!*',
+    '',
+    `👤 *Patient:* ${name}`,
+    `📞 *Phone:* ${phoneText}`,
+    `✉️ *Email:* ${emailText}`,
+    `🦷 *Service:* ${service}`,
+    `📅 *Date:* ${dateText}`,
+    `⏰ *Time:* ${timeText}`,
+    `💰 *Price:* ${price}`,
+    '',
+    'Reply *yes* to confirm and book, or *no* to cancel.'
+  ].join('\n');
 
-Reply *yes* to confirm and book, or *no* to cancel.`;
   return safeSendText(clinicPhoneNumberId, from, confirmMsg);
 }
 
@@ -445,7 +452,6 @@ async function handleBookingConfirmInput(profile, session, text, clinicPhoneNumb
     return safeSendText(clinicPhoneNumberId, from, '❌ Booking cancelled. Type *menu* to see options or *book* to start again.');
   }
   if (t === 'yes' || t === 'y') {
-    // Final validation
     const parsed = parseDateStrict(session.data.date);
     if (!parsed || !parsed.isValid()) {
       session.state = 'booking_date';
@@ -460,7 +466,6 @@ async function handleBookingConfirmInput(profile, session, text, clinicPhoneNumb
       return safeSendText(clinicPhoneNumberId, from, '❗ The time looks invalid. Please send time like 10:00 or 10 AM.');
     }
 
-    // Build appointment record payload
     const apptPayload = {
       clinicId: profile.clinicId,
       clinicName: profile.clinicName,
@@ -476,7 +481,6 @@ async function handleBookingConfirmInput(profile, session, text, clinicPhoneNumb
       metadata: {}
     };
 
-    // Prevent duplicate booking for same phone/date/time (basic check)
     try {
       const existing = await Record.findOne({
         phone: apptPayload.phone,
@@ -486,15 +490,18 @@ async function handleBookingConfirmInput(profile, session, text, clinicPhoneNumb
         status: { $in: ['booked', 'confirmed'] }
       });
       if (existing) {
-        await clearSession(profile._id);
-        return safeSendText(clinicPhoneNumberId, from, `ℹ️ You already have a booking at that date/time. Appointment ID: ${existing._id}\nType *menu* for options.`);
+        // friendly, actionable message when the chosen slot is already taken
+        const slotDate = dayjs(apptPayload.appointmentDate).format('DD MMM YYYY');
+        const slotTime = apptPayload.timeSlot;
+        // keep the session so user can pick a different time — set state back to booking_time
+        session.state = 'booking_time';
+        await saveSession(profile._id, session);
+        return safeSendText(clinicPhoneNumberId, from, `😕 The slot *${slotDate}* at *${slotTime}* is already booked. Please try another time — reply with a different time (e.g. 11:00 or 2 PM).`);
       }
     } catch (err) {
       console.error('Duplicate check error:', err);
     }
-
-    // Create appointment record
-    let apptRec;
+let apptRec;
     try {
       apptRec = await Record.create(apptPayload);
     } catch (err) {
@@ -502,7 +509,6 @@ async function handleBookingConfirmInput(profile, session, text, clinicPhoneNumb
       return safeSendText(clinicPhoneNumberId, from, '❌ Something went wrong while saving your appointment. Please try again later.');
     }
 
-    // Update profile: set patientName/email and clear session
     try {
       await Record.findByIdAndUpdate(profile._id, {
         $set: { patientName: apptPayload.patientName, email: apptPayload.email, updatedAt: new Date() },
@@ -512,34 +518,32 @@ async function handleBookingConfirmInput(profile, session, text, clinicPhoneNumb
       console.error('Failed to update/clear profile after booking:', err);
     }
 
-    // Notify clinic staff (if contactNumber configured)
     try {
       const clinicObj = clinicsConfig.findClinicById(apptRec.clinicId);
       if (clinicObj && clinicObj.contactNumber) {
-        const notify = `📣 *New appointment booked*
-🦷 ${apptRec.service}
-👤 ${apptRec.patientName} (${apptRec.phone})
-📅 ${dayjs(apptRec.appointmentDate).format('DD MMM YYYY')}
-⏰ ${apptRec.timeSlot}
-🆔 ${apptRec._id}`;
+        const notify = [
+          '📣 *New appointment booked*',
+          `🦷 ${apptRec.service}`,
+          `👤 ${apptRec.patientName} (${apptRec.phone})`,
+          `📅 ${dayjs(apptRec.appointmentDate).format('DD MMM YYYY')}`,
+          `⏰ ${apptRec.timeSlot}`,
+          `🆔 ${apptRec._id}`
+        ].join('\n');
         await safeSendText(clinicObj.phoneNumberId, clinicObj.contactNumber, notify);
       }
     } catch (err) {
       console.error('Failed to notify clinic staff:', err);
     }
 
-    // Confirm to user
-    const confText = `🎉 Your appointment is confirmed for *${dayjs(apptRec.appointmentDate).format('DD MMM YYYY')}* at *${apptRec.timeSlot}*.\nAppointment ID: ${apptRec._id}\nWe look forward to seeing you!`;
+    const confText = [`🎉 *Appointment Confirmed!*`, `Your appointment is scheduled for *${dayjs(apptRec.appointmentDate).format('DD MMM YYYY')}* at *${apptRec.timeSlot}*.`, `Appointment ID: ${apptRec._id}`, '', 'We look forward to seeing you — if you need to reschedule, reply *menu* and choose Booking.'].join('\n');
     return safeSendText(clinicPhoneNumberId, from, confText);
   }
 
-  // If not clearly yes/no
   return safeSendText(clinicPhoneNumberId, from, 'Please reply with *yes* to confirm or *no* to cancel.');
 }
 
 function formatPhoneForPrompt(p) {
   if (!p) return '';
-  // show last 10 digits for privacy if longer
   const cleaned = normalizePhone(p) || p;
   if (cleaned.length > 10) return `+${cleaned}`;
   return cleaned;
