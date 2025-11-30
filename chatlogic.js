@@ -15,6 +15,7 @@ dayjs.extend(utc);
 
 const SESSION_TTL_MIN = 30;            // session expiry (minutes)
 const DEFAULT_PRICE = Number(process.env.DEFAULT_PRICE || 0);
+const RECEPTION_FALLBACK = process.env.RECEPTION_NUMBER || '+919999999999'; // replace fallback with real reception number
 
 // Services list (editable) - you asked to add more services
 const SERVICES = [
@@ -31,18 +32,15 @@ const SERVICES = [
   { key: 'pediatric', name: 'Pediatric Dentistry', price: 1000 }
 ];
 
-// Frequently Asked Questions (editable)
+// Frequently Asked Questions (letter-based)
 const FAQS = [
-  { q: "What services do you offer?", a: "We offer Cleaning, Scaling & Polishing, Whitening, Braces, RCT, Implants, Fillings, Extractions, Veneers, Dentures, Pediatric Dentistry and more. Reply with the number to learn more." },
-  { q: "What are your clinic hours?", a: "Our clinic operates Monday to Saturday, 10:00 AM — 8:00 PM. We are closed on Sundays. For urgent care please call the clinic." },
-  { q: "Where is your clinic located?", a: "We are located at: [Add Clinic Address Here]. You can share your current location and we will guide you with directions." },
-  { q: "How can I book an appointment?", a: "You can book via this WhatsApp assistant — choose Book Appointment from the menu, select service, date & time and confirm. You will receive a confirmation message with your appointment ID." },
-  { q: "What payment methods do you accept?", a: "We accept Cash, UPI, Debit/Credit Cards and Online Payments." },
-  { q: "Do you provide emergency dental care?", a: "Yes — we handle urgent cases like severe pain, bleeding or trauma. Call the clinic for priority assistance." },
-  { q: "Do you treat children?", a: "Yes — we provide pediatric dental care with a child-friendly environment." },
-  { q: "Is teeth whitening safe?", a: "Professional whitening is safe when performed by a dentist using clinically approved products. We assess tooth sensitivity first." },
-  { q: "How often should I visit the dentist?", a: "Routine check-ups every 6 months are recommended for most patients. Some treatments require more frequent follow-ups." },
-  { q: "Do you offer follow-up or warranty for treatments?", a: "Yes — many restorative treatments include follow-up care. Specific warranty terms depend on the treatment and will be discussed during consultation." }
+  { id: 'e', q: "What payment methods do you accept?", a: "We accept Cash, UPI, Debit/Credit Cards and Online Payments." },
+  { id: 'f', q: "Do you provide emergency dental care?", a: "Yes — we handle urgent cases like severe pain, bleeding or trauma. Call the clinic reception for priority assistance." },
+  { id: 'g', q: "Do you treat children?", a: "Yes — we provide pediatric dental care with a child-friendly environment." },
+  { id: 'h', q: "Is teeth whitening safe?", a: "Professional whitening is safe when performed by a dentist using clinically approved products. We assess tooth sensitivity first." },
+  { id: 'i', q: "How often should I visit the dentist?", a: "Routine check-ups every 6 months are recommended for most patients. Some treatments require more frequent follow-ups." },
+  { id: 'j', q: "Do you offer follow-up or warranty for treatments?", a: "Yes — many restorative treatments include follow-up care. Specific warranty terms depend on the treatment and will be discussed during consultation." },
+  { id: 'k', q: "How can I contact reception?", a: null } // we'll fill a contact answer per clinic below dynamically
 ];
 
 // Polished Main menu (professional tone, aligned spacing)
@@ -168,6 +166,38 @@ function resolveClinic(value, clinicFromCaller) {
   return all.length === 1 ? all[0] : null;
 }
 
+// Helper to get clinic reception number (clinic config preferred)
+function getClinicReceptionNumber(clinicId) {
+  try {
+    const clinicObj = clinicsConfig.findClinicById(clinicId) || {};
+    if (clinicObj.receptionNumber) return clinicObj.receptionNumber;
+    if (clinicObj.contactNumber) return clinicObj.contactNumber;
+    return RECEPTION_FALLBACK;
+  } catch (err) {
+    return RECEPTION_FALLBACK;
+  }
+}
+
+// Build FAQ menu (letters A, B, C...)
+function buildFaqMenu(clinicId) {
+  // ensure the "contact reception" FAQ (id 'k') contains the real reception number for that clinic
+  const receptionNumber = getClinicReceptionNumber(clinicId);
+  // clone FAQS so we don't mutate global array permanently
+  const faqsCopy = FAQS.map(f => ({ ...f }));
+  // find 'k' entry (contact) and set its answer
+  for (let f of faqsCopy) {
+    if (f.id === 'k') {
+      f.a = `You can contact clinic reception at: ${receptionNumber}.`;
+    }
+  }
+  // create menu text
+  const items = faqsCopy.map(f => `${f.id.toUpperCase()}. ${f.q}`).join('\n');
+  return {
+    text: ['❓ *Frequently Asked Questions*', '', 'Please reply with the *letter* (A, B, C...) of the question you want the answer to:', '', items, '', 'Type *menu* to return to the main menu.'].join('\n'),
+    faqs: faqsCopy
+  };
+}
+
 // ---------- Main handler ----------
 async function handleIncomingMessage(message, value, clinicFromCaller) {
   const from = message.from;
@@ -208,7 +238,7 @@ async function handleIncomingMessage(message, value, clinicFromCaller) {
 
       const greetMsg = [
         `Hello! 👋`,
-        `Welcome to *${clinicName}*. I'm the clinic assistant how can i help you .`,
+        `Welcome to *${clinicName}*. I'm the clinic assistant — how can I help you?`,
         '',
         `May I know your full name, please?`,
         '',
@@ -268,7 +298,7 @@ async function handleIncomingMessage(message, value, clinicFromCaller) {
   if (/service|services|price|pricing/i.test(text)) return routeMenu('1', profile, session, clinicPhoneNumberId);
   if (/hour|time|timings|opening|open/i.test(text)) return routeMenu('3', profile, session, clinicPhoneNumberId);
   if (/address|location|where/i.test(text)) return routeMenu('4', profile, session, clinicPhoneNumberId);
-  if (/faq|help|question/i.test(text)) return routeMenu('5', profile, session, clinicPhoneNumberId);
+  if (/faq|faqs|question|help|doubt/i.test(text)) return routeMenu('5', profile, session, clinicPhoneNumberId);
 
   // Booking & FAQ flow continuation
   switch (session.state) {
@@ -324,26 +354,16 @@ async function routeMenu(opt, profile, session, clinicPhoneNumberId) {
       session.state = 'idle';
       await saveSession(profile._id, session);
       const clinicObj = clinicsConfig.findClinicById(profile.clinicId) || {};
-      const address = clinicObj.address || 'Address not available. Please contact reception.';
+      const address = clinicObj.address || 'lumo apartment, 10th floor, room 1006, Humkkula Street, Mastani Road.';
       return safeSendText(clinicPhoneNumberId, from, `📍 *Clinic Address*: ${address}`);
     }
     case '5': {
-      // show numbered FAQ list and move session to faq_select
+      // show letter-based FAQ list and move session to faq_select
       session.state = 'faq_select';
       session.data = session.data || {};
       await saveSession(profile._id, session);
 
-      // Format the FAQs as numbered list
-      const faqList = FAQS.map((f, i) => `${i+1}. ${f.q}`).join('\n\n');
-      const faqMsg = [
-        '❓ *Frequently Asked Questions*',
-        '',
-        faqList,
-        '',
-        'Reply with the *number* of the question you want the answer to (for example: 2).',
-        'Type *menu* to return to the main menu.'
-      ].join('\n');
-
+      const { text: faqMsg } = buildFaqMenu(profile.clinicId);
       return safeSendText(clinicPhoneNumberId, profile.phone, faqMsg);
     }
     default:
@@ -590,7 +610,8 @@ async function handleBookingConfirmInput(profile, session, text, clinicPhoneNumb
 // ---------- FAQ handlers ----------
 async function handleFaqSelectionInput(profile, session, text, clinicPhoneNumberId) {
   const from = profile.phone;
-  const t = text.trim().toLowerCase();
+  const tRaw = text.trim();
+  const t = tRaw.toLowerCase();
 
   // allow returning to menu
   if (t === 'menu' || t === 'back' || t === '0') {
@@ -600,39 +621,56 @@ async function handleFaqSelectionInput(profile, session, text, clinicPhoneNumber
     return safeSendText(clinicPhoneNumberId, from, MAIN_MENU_TEXT);
   }
 
-  // accept numeric choice
-  const numMatch = t.match(/^(\d{1,2})$/); // supports up to 99 FAQs
-  if (numMatch) {
+  // Build fresh FAQ copy for this clinic
+  const { faqs: faqsForClinic } = buildFaqMenu(profile.clinicId);
+
+  // Accept letter input (a, b, c...) or numeric (1,2,3...)
+  const letterMatch = t.match(/^[a-z]$/);
+  const numMatch = t.match(/^(\d{1,2})$/);
+
+  let selectedFaq = null;
+
+  if (letterMatch) {
+    const letter = letterMatch[0];
+    selectedFaq = faqsForClinic.find(f => f.id === letter);
+  } else if (numMatch) {
     const idx = parseInt(numMatch[1], 10) - 1;
-    if (idx >= 0 && idx < FAQS.length) {
-      const faq = FAQS[idx];
-      // reply with answer and offer next steps
-      const reply = [
-        `❓ *Q:* ${faq.q}`,
-        '',
-        `💡 *A:* ${faq.a}`,
-        '',
-        'Reply with another FAQ number to read more, or type *menu* to go back to the main menu.'
-      ].join('\n');
-      // keep session in faq_select so user can choose again
-      session.state = 'faq_select';
-      await saveSession(profile._id, session);
-      return safeSendText(clinicPhoneNumberId, from, reply);
-    } else {
-      return safeSendText(clinicPhoneNumberId, from, `❗ Invalid selection. Please reply with a number between 1 and ${FAQS.length}, or type *menu* to return to the main menu.`);
-    }
+    if (idx >= 0 && idx < faqsForClinic.length) selectedFaq = faqsForClinic[idx];
   }
 
-  // if text includes keywords try to match to a FAQ
-  for (let i = 0; i < FAQS.length; i++) {
-    const q = FAQS[i].q.toLowerCase();
-    if (t.includes('hour') && q.includes('hours')) return handleFaqSelectionInput(profile, session, String(i+1), clinicPhoneNumberId);
-    if (t.includes('where') && q.includes('located')) return handleFaqSelectionInput(profile, session, String(i+1), clinicPhoneNumberId);
-    if (t.includes('book') && q.includes('book')) return handleFaqSelectionInput(profile, session, String(i+1), clinicPhoneNumberId);
+  if (selectedFaq) {
+    // make sure contact answer includes the clinic reception number
+    const receptionNumber = getClinicReceptionNumber(profile.clinicId);
+    let answerText = selectedFaq.a;
+    if (selectedFaq.id === 'k') {
+      answerText = `You can contact clinic reception at: ${receptionNumber}.`;
+    }
+    const reply = [
+      `❓ *Q:* ${selectedFaq.q}`,
+      '',
+      `💡 *A:* ${answerText}`,
+      '',
+      'Reply with another FAQ letter (A, B, C...) to read more, or type *menu* to go back to the main menu.'
+    ].join('\n');
+    // keep session in faq_select so user can choose again
+    session.state = 'faq_select';
+    await saveSession(profile._id, session);
+    return safeSendText(clinicPhoneNumberId, from, reply);
+  }
+
+  // if text includes keywords try to match to a FAQ (loose)
+  const keyword = t;
+  for (let i = 0; i < faqsForClinic.length; i++) {
+    const q = faqsForClinic[i].q.toLowerCase();
+    if (keyword.includes('hour') && q.includes('hours')) return handleFaqSelectionInput(profile, session, String(i+1), clinicPhoneNumberId);
+    if (keyword.includes('where') && (q.includes('located') || q.includes('location'))) return handleFaqSelectionInput(profile, session, String(i+1), clinicPhoneNumberId);
+    if (keyword.includes('book') && q.includes('book')) return handleFaqSelectionInput(profile, session, String(i+1), clinicPhoneNumberId);
+    if (keyword.includes('payment') && q.includes('payment')) return handleFaqSelectionInput(profile, session, String(i+1), clinicPhoneNumberId);
+    if ((keyword.includes('contact') || keyword.includes('reception') || keyword.includes('phone')) && q.includes('contact')) return handleFaqSelectionInput(profile, session, String(i+1), clinicPhoneNumberId);
   }
 
   // fallback
-  return safeSendText(clinicPhoneNumberId, from, `I didn't understand that. Reply with a FAQ number (1-${FAQS.length}) or type *menu* to return to the main menu.`);
+  return safeSendText(clinicPhoneNumberId, from, `I didn't understand that. Reply with an FAQ letter (A-${FAQS[FAQS.length - 1].id.toUpperCase()}) or type *menu* to return to the main menu.`);
 }
 
 // ---------- Helper: format phone for prompts ----------
