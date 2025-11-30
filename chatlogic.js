@@ -34,13 +34,13 @@ const SERVICES = [
 
 // Frequently Asked Questions (letter-based)
 const FAQS = [
-  { id: 'A', q: "What payment methods do you accept?", a: "We accept Cash, UPI, Debit/Credit Cards and Online Payments." },
-  { id: 'B', q: "Do you provide emergency dental care?", a: "Yes — we handle urgent cases like severe pain, bleeding or trauma. Call the clinic reception for priority assistance." },
-  { id: 'C', q: "Do you treat children?", a: "Yes — we provide pediatric dental care with a child-friendly environment." },
-  { id: 'D', q: "Is teeth whitening safe?", a: "Professional whitening is safe when performed by a dentist using clinically approved products. We assess tooth sensitivity first." },
-  { id: 'E', q: "How often should I visit the dentist?", a: "Routine check-ups every 6 months are recommended for most patients. Some treatments require more frequent follow-ups." },
-  { id: 'F', q: "Do you offer follow-up or warranty for treatments?", a: "Yes — many restorative treatments include follow-up care. Specific warranty terms depend on the treatment and will be discussed during consultation." },
-  { id: 'G', q: "How can I contact reception?", a: null } // we'll fill a contact answer per clinic below dynamically
+  { id: 'a', q: "What payment methods do you accept?", a: "We accept Cash, UPI, Debit/Credit Cards and Online Payments." },
+  { id: 'b', q: "Do you provide emergency dental care?", a: "Yes — we handle urgent cases like severe pain, bleeding or trauma. Call the clinic reception for priority assistance." },
+  { id: 'c', q: "Do you treat children?", a: "Yes — we provide pediatric dental care with a child-friendly environment." },
+  { id: 'd', q: "Is teeth whitening safe?", a: "Professional whitening is safe when performed by a dentist using clinically approved products. We assess tooth sensitivity first." },
+  { id: 'e', q: "How often should I visit the dentist?", a: "Routine check-ups every 6 months are recommended for most patients. Some treatments require more frequent follow-ups." },
+  { id: 'f', q: "Do you offer follow-up or warranty for treatments?", a: "Yes — many restorative treatments include follow-up care. Specific warranty terms depend on the treatment and will be discussed during consultation." },
+  { id: 'g', q: "How can I contact reception?", a: null } // we'll fill a contact answer per clinic below dynamically
 ];
 
 // Polished Main menu (professional tone, aligned spacing)
@@ -642,7 +642,7 @@ async function handleFaqSelectionInput(profile, session, text, clinicPhoneNumber
     // make sure contact answer includes the clinic reception number
     const receptionNumber = getClinicReceptionNumber(profile.clinicId);
     let answerText = selectedFaq.a;
-    if (selectedFaq.id === 'k') {
+    if (selectedFaq.id === 'g') {
       answerText = `You can contact clinic reception at: ${receptionNumber}.`;
     }
     const reply = [
