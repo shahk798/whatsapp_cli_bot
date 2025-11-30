@@ -86,7 +86,7 @@ function parseDateStrict(text) {
 function normalizeTime(text) {
   if (!text) return null;
   let t = text.replace(/\./g, ':').trim();
-  const parsed = dayjs(t, ['H:mm', 'HH:mm', 'h:mm A', 'h A', 'ha', 'H'], true);
+  const parsed = dayjs(t, ['H:mm', 'HH:mm', 'h:mm A', 'h A', 'ha','h a','h.mm a','h.mm A', 'H'], true);
   if (parsed.isValid()) return parsed.format('HH:mm');
   const loose = dayjs(t);
   return loose.isValid() ? loose.format('HH:mm') : null;
