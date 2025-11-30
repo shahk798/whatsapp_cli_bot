@@ -13,7 +13,7 @@ const utc = require('dayjs/plugin/utc');
 dayjs.extend(customParseFormat);
 dayjs.extend(utc);
 
-const SESSION_TTL_MIN = 30;            // session expiry (minutes)
+const SESSION_TTL_MIN = 30; // session expiry (minutes)
 const DEFAULT_PRICE = Number(process.env.DEFAULT_PRICE || 0);
 const RECEPTION_FALLBACK = process.env.RECEPTION_NUMBER || '+919999999999'; // replace fallback with real reception number
 
@@ -79,7 +79,7 @@ function normalizeForRouting(text) {
 // Date/time parsing & normalization (using dayjs)
 function parseDateStrict(text) {
   if (!text) return null;
-  const formats = ['DD-MM-YYYY', 'D-M-YYYY', 'DD/MM/YYYY', 'D/M/YYYY', 'YYYY-MM-DD','DD.MM.YYYY','D.M.YYYY'];
+  const formats = ['DD-MM-YYYY', 'D-M-YYYY', 'DD/MM/YYYY', 'D/M/YYYY', 'YYYY-MM-DD', 'DD.MM.YYYY', 'D.M.YYYY'];
   for (const f of formats) {
     const d = dayjs(text, f, true);
     if (d.isValid()) return d;
@@ -89,8 +89,9 @@ function parseDateStrict(text) {
 }
 function normalizeTime(text) {
   if (!text) return null;
-  let t = text.replace(/./g, ':').trim();
-  const parsed = dayjs(t, ['H:mm', 'HH:mm', 'h:mm A', 'h A', 'ha','h a','h.mm a','h.mm A', 'H'], true);
+  // replace only literal dots with colon (previously /./ replaced every character)
+  let t = text.replace(/\./g, ':').trim();
+  const parsed = dayjs(t, ['H:mm', 'HH:mm', 'h:mm A', 'h A', 'ha', 'h a', 'h.mm a', 'h.mm A', 'H'], true);
   if (parsed.isValid()) return parsed.format('HH:mm');
   const loose = dayjs(t);
   return loose.isValid() ? loose.format('HH:mm') : null;
@@ -99,11 +100,13 @@ function normalizeTime(text) {
 // Simple email & phone validation (basic)
 function validEmail(email) {
   if (!email) return false;
-  return /^[^\s@]+@[^\s@]+.[^\s@]+$/.test(email);
+  // improved: escape dot to match literal dot
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 }
 function normalizePhone(p) {
   if (!p) return null;
-  let cleaned = String(p).replace(/[\s+-()]/g, '');
+  // escape hyphen so it's treated literally in the char class
+  let cleaned = String(p).replace(/[\s+\-()]/g, '');
   if (!/^\d+$/.test(cleaned)) return null;
   return cleaned;
 }
@@ -163,7 +166,7 @@ async function safeSendText(phoneNumberId, to, text) {
 }
 
 function servicesListText() {
-  return SERVICES.map((s, i) => `${i+1}. ${s.name} — ₹${s.price.toLocaleString()}`).join('\n');
+  return SERVICES.map((s, i) => `${i + 1}. ${s.name} — ₹${s.price.toLocaleString()}`).join('\n');
 }
 
 function resolveClinic(value, clinicFromCaller) {
@@ -409,7 +412,7 @@ async function handleBookingEmailInput(profile, session, text, clinicPhoneNumber
     return presentServiceOptions(profile, session, clinicPhoneNumberId);
   }
   if (!validEmail(trimmed)) {
-    return safeSendText(clinicPhoneNumberId, from, '❗ Please send a valid email address (example: [name@example.com](mailto:name@example.com)) or type "skip".');
+    return safeSendText(clinicPhoneNumberId, from, '❗ Please send a valid email address (example: name@example.com) or type "skip".');
   }
   session.data.email = trimmed;
   session.state = 'booking_service';
@@ -669,11 +672,11 @@ async function handleFaqSelectionInput(profile, session, text, clinicPhoneNumber
   const keyword = t;
   for (let i = 0; i < faqsForClinic.length; i++) {
     const q = faqsForClinic[i].q.toLowerCase();
-    if (keyword.includes('hour') && q.includes('hours')) return handleFaqSelectionInput(profile, session, String(i+1), clinicPhoneNumberId);
-    if (keyword.includes('where') && (q.includes('located') || q.includes('location'))) return handleFaqSelectionInput(profile, session, String(i+1), clinicPhoneNumberId);
-    if (keyword.includes('book') && q.includes('book')) return handleFaqSelectionInput(profile, session, String(i+1), clinicPhoneNumberId);
-    if (keyword.includes('payment') && q.includes('payment')) return handleFaqSelectionInput(profile, session, String(i+1), clinicPhoneNumberId);
-    if ((keyword.includes('contact') || keyword.includes('reception') || keyword.includes('phone')) && q.includes('contact')) return handleFaqSelectionInput(profile, session, String(i+1), clinicPhoneNumberId);
+    if (keyword.includes('hour') && q.includes('hours')) return handleFaqSelectionInput(profile, session, String(i + 1), clinicPhoneNumberId);
+    if (keyword.includes('where') && (q.includes('located') || q.includes('location'))) return handleFaqSelectionInput(profile, session, String(i + 1), clinicPhoneNumberId);
+    if (keyword.includes('book') && q.includes('book')) return handleFaqSelectionInput(profile, session, String(i + 1), clinicPhoneNumberId);
+    if (keyword.includes('payment') && q.includes('payment')) return handleFaqSelectionInput(profile, session, String(i + 1), clinicPhoneNumberId);
+    if ((keyword.includes('contact') || keyword.includes('reception') || keyword.includes('phone')) && q.includes('contact')) return handleFaqSelectionInput(profile, session, String(i + 1), clinicPhoneNumberId);
   }
 
   // fallback
