@@ -19,34 +19,34 @@ const RECEPTION_FALLBACK = process.env.RECEPTION_NUMBER || '+919999999999'; // r
 
 // Services list (editable) - you asked to add more services
 const SERVICES = [
-  { key: 'cleaning', name: 'Cleaning', price: 500 },
-  { key: 'scaling', name: 'Scaling & Polishing', price: 800 },
-  { key: 'whitening', name: 'Whitening', price: 2000 },
-  { key: 'braces', name: 'Braces', price: 35000 },
-  { key: 'rct', name: 'RCT', price: 3000 },
-  { key: 'implant', name: 'Implant', price: 25000 },
-  { key: 'filling', name: 'Filling', price: 1500 },
-  { key: 'extraction', name: 'Extraction', price: 1200 },
-  { key: 'veneers', name: 'Veneers', price: 18000 },
-  { key: 'dentures', name: 'Dentures', price: 12000 },
-  { key: 'pediatric', name: 'Pediatric Dentistry', price: 1000 }
+  { key: 'Cleaning', name: 'Cleaning', price: 500 },
+  { key: 'Scaling', name: 'Scaling & Polishing', price: 800 },
+  { key: 'Whitening', name: 'Whitening', price: 2000 },
+  { key: 'Braces', name: 'Braces', price: 35000 },
+  { key: 'Rct', name: 'RCT', price: 3000 },
+  { key: 'Implant', name: 'Implant', price: 25000 },
+  { key: 'Filling', name: 'Filling', price: 1500 },
+  { key: 'Extraction', name: 'Extraction', price: 1200 },
+  { key: 'Veneers', name: 'Veneers', price: 18000 },
+  { key: 'Dentures', name: 'Dentures', price: 12000 },
+  { key: 'Pediatric', name: 'Pediatric Dentistry', price: 1000 }
 ];
 
 // Frequently Asked Questions (letter-based)
 const FAQS = [
-  { id: 'e', q: "What payment methods do you accept?", a: "We accept Cash, UPI, Debit/Credit Cards and Online Payments." },
-  { id: 'f', q: "Do you provide emergency dental care?", a: "Yes — we handle urgent cases like severe pain, bleeding or trauma. Call the clinic reception for priority assistance." },
-  { id: 'g', q: "Do you treat children?", a: "Yes — we provide pediatric dental care with a child-friendly environment." },
-  { id: 'h', q: "Is teeth whitening safe?", a: "Professional whitening is safe when performed by a dentist using clinically approved products. We assess tooth sensitivity first." },
-  { id: 'i', q: "How often should I visit the dentist?", a: "Routine check-ups every 6 months are recommended for most patients. Some treatments require more frequent follow-ups." },
-  { id: 'j', q: "Do you offer follow-up or warranty for treatments?", a: "Yes — many restorative treatments include follow-up care. Specific warranty terms depend on the treatment and will be discussed during consultation." },
-  { id: 'k', q: "How can I contact reception?", a: null } // we'll fill a contact answer per clinic below dynamically
+  { id: 'A', q: "What payment methods do you accept?", a: "We accept Cash, UPI, Debit/Credit Cards and Online Payments." },
+  { id: 'B', q: "Do you provide emergency dental care?", a: "Yes — we handle urgent cases like severe pain, bleeding or trauma. Call the clinic reception for priority assistance." },
+  { id: 'C', q: "Do you treat children?", a: "Yes — we provide pediatric dental care with a child-friendly environment." },
+  { id: 'D', q: "Is teeth whitening safe?", a: "Professional whitening is safe when performed by a dentist using clinically approved products. We assess tooth sensitivity first." },
+  { id: 'E', q: "How often should I visit the dentist?", a: "Routine check-ups every 6 months are recommended for most patients. Some treatments require more frequent follow-ups." },
+  { id: 'F', q: "Do you offer follow-up or warranty for treatments?", a: "Yes — many restorative treatments include follow-up care. Specific warranty terms depend on the treatment and will be discussed during consultation." },
+  { id: 'G', q: "How can I contact reception?", a: null } // we'll fill a contact answer per clinic below dynamically
 ];
 
 // Polished Main menu (professional tone, aligned spacing)
 const MAIN_MENU_TEXT = [
   '📋 *Main Menu*',
-  'Please reply with a number or keyword:',
+  'Please reply with a number :',
   '1 — 🩺 Services & Pricing ',
   '2 — 🗓️ Book Appointment    ',
   '3 — ⏳ Clinic Hours         ',
@@ -75,7 +75,7 @@ function normalizeForRouting(text) {
 // Date/time parsing & normalization
 function parseDateStrict(text) {
   if (!text) return null;
-  const formats = ['DD-MM-YYYY', 'D-M-YYYY', 'DD/MM/YYYY', 'D/M/YYYY', 'YYYY-MM-DD'];
+  const formats = ['DD-MM-YYYY', 'D-M-YYYY', 'DD/MM/YYYY', 'D/M/YYYY', 'YYYY-MM-DD','DD.MM.YYYY','D.M.YYYY'];
   for (const f of formats) {
     const d = dayjs(text, f, true);
     if (d.isValid()) return d;
@@ -229,7 +229,7 @@ async function handleIncomingMessage(message, value, clinicFromCaller) {
   }
 
   // ---------- Friendly & professional greeting ----------
-  if (/^(hi|hello|hey|start|menu)$/i.test(textLower)) {
+  if (/^(hi|hello|hey|start|menu|helo)$/i.test(textLower)) {
     // friendly branded greeting that asks for name and sets expectations
     if (!profile.patientName || profile.patientName.trim() === '') {
       session.state = 'asking_name';
@@ -431,7 +431,7 @@ async function handleBookingServiceInput(profile, session, text, clinicPhoneNumb
       session.data.price = SERVICES[idx].price;
       session.state = 'booking_date';
       await saveSession(profile._id, session);
-      return safeSendText(clinicPhoneNumberId, from, '📅 Please provide preferred appointment date (DD-MM-YYYY).');
+      return safeSendText(clinicPhoneNumberId, from, '📅 Please provide preferred appointment date (DD.MM.YYYY).');
     }
   }
   const chosen = SERVICES.find(s => s.name.toLowerCase() === t.toLowerCase() || s.key === t.toLowerCase());
@@ -440,7 +440,7 @@ async function handleBookingServiceInput(profile, session, text, clinicPhoneNumb
     session.data.price = chosen.price;
     session.state = 'booking_date';
     await saveSession(profile._id, session);
-    return safeSendText(clinicPhoneNumberId, from, '📅 Please provide preferred appointment date (DD-MM-YYYY).');
+    return safeSendText(clinicPhoneNumberId, from, '📅 Please provide preferred appointment date (DD.MM.YYYY).');
   }
   return safeSendText(clinicPhoneNumberId, from, `❗ I didn't recognize that service. Please reply with the service name or number:\n\n${servicesListText()}`);
 }
