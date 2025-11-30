@@ -16,9 +16,9 @@ const RecordSchema = new mongoose.Schema({
   price: { type: Number, default: Number(process.env.DEFAULT_PRICE || 0) },
 
   // appointment date/time (flat)
-  // use Date for date so you can query by date range. We expose a string in toCleanJSON().
-  date: { type: Date, default: null },
-  time: { type: String, default: '' },
+  // use Date for appointmentDate so you can query by date range. We expose a string in toCleanJSON().
+  appointmentDate: { type: Date, default: null },
+  timeSlot: { type: String, default: '' },
 
   // status
   status: {
@@ -46,10 +46,10 @@ RecordSchema.methods.toCleanJSON = function() {
     price: typeof this.price === 'number' ? this.price : Number(this.price || 0),
     service: this.service || '',
     status: this.status || 'profile',
-    // expose date as ISO string (YYYY-MM-DD) or empty string if null
-    date: this.date ? this.date.toISOString().split('T')[0] : '',
-    // keep time as provided (e.g. "15:30" or "3:30 PM - 4:00 PM")
-    time: this.time || ''
+    // expose appointmentDate as ISO string (YYYY-MM-DD) or empty string if null
+    appointmentDate: this.appointmentDate ? this.appointmentDate.toISOString().split('T')[0] : '',
+    // keep timeSlot as provided (e.g. "15:30" or "3:30 PM - 4:00 PM")
+    timeSlot: this.timeSlot || ''
   };
 };
 

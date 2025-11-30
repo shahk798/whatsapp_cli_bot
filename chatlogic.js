@@ -337,7 +337,7 @@ async function routeMenu(opt, profile, session, clinicPhoneNumberId) {
       session.state = 'idle';
       session.data = session.data || {};
       await saveSession(profile.phone, session);
-      const msg = [`🦷 *Services & Pricing*`, '', servicesListText(), '', 'Reply with the service name or number to start booking.'].join('\n');
+      const msg = [`🦷 *Services & Pricing*`, '', servicesListText(), '', ].join('\n');
       return safeSendText(clinicPhoneNumberId, from, msg);
     }
     case '2': {
@@ -524,35 +524,34 @@ async function handleBookingConfirmInput(profile, session, text, clinicPhoneNumb
       return safeSendText(clinicPhoneNumberId, from, '❗ The time looks invalid. Please send time like 10:00 or 10 AM.');
     }
 
-    // Build appointment record payload (use new flat fields: date, time)
+    // Build appointment record payload (flattened core fields)
     const apptPayload = {
       clinicId: profile.clinicId,
       clinicName: profile.clinicName,
-      patientName: session.data.name || profile.patientName || '',
+      patientName: session.data.name || profile.patientName || 'Unknown',
       phone: session.data.phone || profile.phone,
-      email: session.data.email || profile.email || '',
-      service: session.data.service || '',
+      service: session.data.service || 'General Consultation',
       price: Number(session.data.price || DEFAULT_PRICE),
-      date: apptDate,
-      time: timeNorm,
+      appointmentDate: apptDate || new Date(),
+      timeSlot: timeNorm || '09:00',
       status: 'booked',
       source: 'whatsapp',
-      metadata: {}
+      metadata: {} // optional extra info
     };
 
-    // Prevent duplicate booking for same phone/date/time (basic check)
+    // Prevent duplicate booking for same phone/appointmentDate/timeSlot (basic check)
     try {
       const existing = await Record.findOne({
         phone: apptPayload.phone,
         clinicId: apptPayload.clinicId,
-        date: apptPayload.date,
-        time: apptPayload.time,
+        appointmentDate: apptPayload.appointmentDate,
+        timeSlot: apptPayload.timeSlot,
         status: { $in: ['booked', 'confirmed'] }
       });
       if (existing) {
         // friendly, actionable message when the chosen slot is already taken
-        const slotDate = dayjs(apptPayload.date).format('DD MMM YYYY');
-        const slotTime = apptPayload.time;
+        const slotDate = dayjs(apptPayload.appointmentDate).format('DD MMM YYYY');
+        const slotTime = apptPayload.timeSlot;
         // keep the session so user can pick a different time — set state back to booking_time
         session.state = 'booking_time';
         await saveSession(profile.phone, session);
@@ -591,8 +590,8 @@ async function handleBookingConfirmInput(profile, session, text, clinicPhoneNumb
           '📣 *New appointment booked*',
           `🦷 ${apptRec.service}`,
           `👤 ${apptRec.patientName} (${apptRec.phone})`,
-          `📅 ${dayjs(apptRec.date).format('DD MMM YYYY')}`,
-          `⏰ ${apptRec.time}`,
+          `📅 ${dayjs(apptRec.appointmentDate).format('DD MMM YYYY')}`,
+          `⏰ ${apptRec.timeSlot}`,
           `🆔 ${apptRec._id}`
         ].join('\n');
         await safeSendText(clinicObj.phoneNumberId, clinicObj.contactNumber, notify);
@@ -604,7 +603,7 @@ async function handleBookingConfirmInput(profile, session, text, clinicPhoneNumb
     // Confirm to user
     const confText = [
       '🎉 *Appointment Confirmed!*',
-      `Your appointment is scheduled for *${dayjs(apptRec.date).format('DD MMM YYYY')}* at *${apptRec.time}*.`,
+      `Your appointment is scheduled for *${dayjs(apptRec.appointmentDate).format('DD MMM YYYY')}* at *${apptRec.timeSlot}*.`,
       `Appointment ID: ${apptRec._id}`,
       '',
       'We look forward to seeing you — if you need to reschedule, reply *menu* and choose Booking.'
